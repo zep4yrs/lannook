@@ -2,7 +2,7 @@
   "name": "lannook",
   "author": "Map1eBr1dge",
   "private": true,
-  "version": "26.2.2",
+  "version": "26.3.0",
   "license": "GPL-3.0-only",
   "type": "module",
   "scripts": {
