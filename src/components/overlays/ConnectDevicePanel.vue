@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, shallowRef, watch } from "vue";
-import { Check, Copy, LoaderCircle, Wifi, X } from "lucide-vue-next";
+import { Check, Copy, LoaderCircle, RefreshCw, Wifi, X } from "lucide-vue-next";
 import { useAppStore } from "@/stores/app";
 import { useSettingsStore } from "@/stores/settings";
 import { useConnectionDiagnostics } from "@/composables/useConnectionDiagnostics";
@@ -53,10 +53,20 @@ const mdnsUrl = computed(() => {
 
 const receiveFolder = computed(() => appStore.connectionInfo?.receiveFolder || null);
 
+const pairingPin = computed(() => appStore.connectionInfo?.pin || null);
+
+async function refreshPin() {
+  await appStore.refreshPairingPinCode();
+}
+
 async function refreshPanelData() {
   if (panelRefresh) return panelRefresh;
   panelRefresh = (async () => {
     await appStore.refreshConnectionData();
+    // Auto-generate a pairing PIN the first time the panel opens.
+    if (appStore.serverRunning && !appStore.connectionInfo?.pin) {
+      await appStore.refreshPairingPinCode();
+    }
     await refreshDiagnostics(appStore.selectedConnectionIp || undefined);
   })().finally(() => {
     panelRefresh = null;
@@ -273,6 +283,28 @@ function trapFocus(event: KeyboardEvent) {
           </div>
         </div>
 
+        <p class="add-to-home-hint">{{ t("connect.addToHome") }}</p>
+
+        <div v-if="pairingPin" class="pin-section">
+          <div class="pin-row">
+            <div class="pin-info">
+              <span class="pin-label">{{ t("connect.pairingPin") }}</span>
+              <small class="pin-hint">{{ t("connect.pairingPinHint") }}</small>
+            </div>
+            <div class="pin-controls">
+              <span class="pin-value">{{ pairingPin }}</span>
+              <button
+                class="pin-refresh"
+                :aria-label="t('connect.pairingPinRefresh')"
+                :title="t('connect.pairingPinRefresh')"
+                @click="refreshPin"
+              >
+                <RefreshCw :size="13" />
+              </button>
+            </div>
+          </div>
+        </div>
+
         <div class="settings-section">
           <div class="setting-row">
             <div>
@@ -367,7 +399,34 @@ function trapFocus(event: KeyboardEvent) {
 .qr-hint { margin: 8px 0 0; color: var(--color-text-tertiary); font-size: var(--text-xs); }
 .panel-error { margin: 0 0 12px; padding: 8px 10px; border-radius: var(--radius-sm); background: var(--color-state-error-soft); color: var(--color-state-error); font-size: var(--text-xs); }
 .browser-warning { margin: 0 0 14px; padding: 8px 10px; border-radius: var(--radius-sm); background: var(--color-state-warning-soft); color: var(--color-text-secondary); font-size: 11px; line-height: 1.5; }
-.info-section, .settings-section { display: flex; flex-direction: column; gap: 11px; margin-bottom: 14px; }
+.info-section, .settings-section, .add-to-home-hint { margin: 0 0 12px; color: var(--color-text-tertiary); font-size: 11px; line-height: 1.5; }
+.pin-section { display: flex; flex-direction: column; gap: 11px; margin-bottom: 14px; }
+.pin-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.pin-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pin-label { color: var(--color-text-secondary); font-size: var(--text-xs); }
+.pin-hint { color: var(--color-text-tertiary); font-size: 11px; line-height: 1.4; }
+.pin-controls { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.pin-value {
+  font-family: var(--font-mono);
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: var(--color-brand-primary);
+}
+.pin-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+}
+.pin-refresh:hover { background: var(--color-hover); color: var(--color-text-secondary); }
+.pin-refresh:active { background: var(--color-active); }
 .info-row, .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .info-label, .setting-label { flex: 0 0 auto; color: var(--color-text-secondary); font-size: var(--text-xs); }
 .info-value-group { display: flex; min-width: 0; align-items: center; gap: 4px; }

@@ -217,8 +217,8 @@ function getChecksum(task: TransferTask): string | null {
 }
 
 function getChecksumLabel(task: TransferTask): string {
-  if (getChecksum(task)) return "可查看";
-  return task.status === "completed" ? "未生成" : "计算中...";
+  if (getChecksum(task)) return t("transfers.viewChecksum");
+  return task.status === "completed" ? t("transfers.notGenerated") : t("transfers.calculating");
 }
 
 function getShortChecksum(checksum: string): string {
@@ -254,14 +254,14 @@ function handleCancel(id: string) {
 
 async function handleOpenReceiveFolder() {
   if (!isTauri()) {
-    appStore.pushToast("info", "仅桌面端支持", "请在桌面应用中打开接收文件夹");
+    appStore.pushToast("info", t("transfers.desktopOnly"), t("transfers.desktopOnlyDescription"));
     return;
   }
   try {
     await openReceiveFolder();
   } catch (err) {
     console.error("[transfers] Failed to open receive folder:", err);
-    appStore.pushToast("error", "打开失败", "无法打开接收文件夹");
+    appStore.pushToast("error", t("transfers.openFailed"), t("transfers.openFailedDescription"));
   }
 }
 
@@ -508,7 +508,7 @@ onUnmounted(() => {
               <button
                 v-if="task.status !== 'completed' && task.status !== 'cancelled' && task.status !== 'rejected' && task.status !== 'expired' && task.status !== 'failed'"
                 class="action-btn action-btn--danger"
-                title="取消"
+                :title="t('transfers.cancel')"
                 @click="handleCancel(task.id)"
               >
                 <X :size="14" />
@@ -520,7 +520,7 @@ onUnmounted(() => {
             <div v-if="expandedId === task.id" class="transfer-detail">
               <div class="detail-grid">
               <div class="detail-item">
-                <span class="detail-label">分块进度</span>
+                <span class="detail-label">{{ t("transfers.chunkProgress") }}</span>
                 <div class="chunk-viz">
                   <span
                     v-for="i in 20"
@@ -531,21 +531,21 @@ onUnmounted(() => {
                 </div>
               </div>
               <div class="detail-item">
-                <span class="detail-label">已用时间</span>
+                <span class="detail-label">{{ t("transfers.elapsed") }}</span>
                 <span class="detail-value">{{ formatElapsed(task) }}</span>
               </div>
               <div class="detail-item">
-                <span class="detail-label">开始时间</span>
+                <span class="detail-label">{{ t("transfers.startedAt") }}</span>
                 <span class="detail-value">{{ new Date(task.createdAt).toLocaleTimeString() }}</span>
               </div>
               <div class="detail-item">
-                <span class="detail-label">保存路径</span>
+                <span class="detail-label">{{ t("transfers.savePath") }}</span>
                 <span class="detail-value">{{ task.savePath ?? settingsStore.receiveFolder }}</span>
               </div>
               <div class="detail-item">
-                <span class="detail-label">快速校验码</span>
+                <span class="detail-label">{{ t("transfers.quickChecksum") }}</span>
                 <details v-if="getChecksum(task)" class="checksum-details">
-                  <summary class="detail-value detail-value--mono" title="点击查看完整 SHA-256">
+                  <summary class="detail-value detail-value--mono" :title="t('transfers.fullShaHint')">
                     {{ getShortChecksum(getChecksum(task)!) }}
                   </summary>
                   <code class="checksum-full">{{ getChecksum(task) }}</code>
@@ -556,7 +556,7 @@ onUnmounted(() => {
                 <span v-else class="detail-value detail-value--mono">{{ getChecksumLabel(task) }}</span>
               </div>
               <div class="detail-item">
-                <span class="detail-label">重试次数</span>
+                <span class="detail-label">{{ t("transfers.retryCountLabel") }}</span>
                 <span class="detail-value">{{ task.retryCount ?? 0 }}</span>
               </div>
               </div>

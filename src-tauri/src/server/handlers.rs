@@ -16,13 +16,18 @@ use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 use crate::error::{AppError, AppResult};
 use crate::server::download;
-use crate::server::{FileInfo, SharedState, TransferTelemetry, WsEvent};
+use crate::server::{FileInfo, PairingAttempt, SharedState, TransferTelemetry, WsEvent};
 use crate::storage::{
     ChunkRecord, DeviceRecord, RelayFile, TransferEvent, TransferFileRecord, TransferRecord,
 };
 use crate::transfer::{self, CHUNK_SIZE};
 
 const MAX_FILES_PER_TRANSFER: usize = 1_000;
+/// Maximum number of 512 KiB chunks a single transfer may declare. Prevents
+/// a client from pre-materialising millions of chunk rows in the database.
+const MAX_CHUNKS_PER_TRANSFER: i64 = 100_000;
+/// Upper bound on transfers one device may keep in-flight at the same time.
+const MAX_ACTIVE_TRANSFERS_PER_DEVICE: i64 = 50;
 
 pub async fn api_not_found() -> (axum::http::StatusCode, Json<serde_json::Value>) {
     (
@@ -52,6 +57,17 @@ pub struct RegisterDeviceRequest {
     #[serde(default)]
     pub client_id: String,
     pub token: String,
+    /// The session token previously issued to this browser, if any. It proves
+    /// the caller already owns the device record for client_id; without it,
+    /// an existing client_id is never reused as an authorization anchor.
+    #[serde(default)]
+    pub session_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairRequest {
+    pub pin: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -160,6 +176,30 @@ fn validate_transfer_files(files: &[FileEntry], max_file_size: i64) -> AppResult
     Ok(total_bytes)
 }
 
+/// Bound the total number of chunk records a single transfer may declare so
+/// a malicious client cannot inflate the database (anti-DoS). The declared
+/// size limit is already enforced by `validate_transfer_files`.
+fn validate_transfer_chunk_budget(files: &[FileEntry]) -> AppResult<i64> {
+    let mut total_chunks: i64 = 0;
+    for file in files {
+        let chunks = if file.size == 0 {
+            0
+        } else {
+            (file.size - 1) / CHUNK_SIZE + 1
+        };
+        total_chunks = total_chunks
+            .checked_add(chunks)
+            .ok_or_else(|| AppError::Internal("Transfer requires too many chunks".to_string()))?;
+        if total_chunks > MAX_CHUNKS_PER_TRANSFER {
+            return Err(AppError::Internal(format!(
+                "Transfer exceeds the maximum number of chunks ({}). Reduce the file count or size.",
+                MAX_CHUNKS_PER_TRANSFER
+            )));
+        }
+    }
+    Ok(total_chunks)
+}
+
 fn host_platform() -> &'static str {
     match std::env::consts::OS {
         "windows" => "windows",
@@ -218,7 +258,7 @@ fn mobile_target_list(
 /// speed no longer "flashes" between wildly different values. The remaining
 /// time is derived from the same smoothed value, keeping phone and desktop
 /// telemetry consistent.
-struct SpeedTracker {
+pub(crate) struct SpeedTracker {
     samples: Vec<(Instant, i64)>,
     smoothed_speed: f64,
 }
@@ -277,10 +317,6 @@ impl SpeedTracker {
         self.smoothed_speed as i64
     }
 }
-
-// Use a thread-local speed tracker per transfer (simplified approach)
-static SPEED_TRACKERS: std::sync::LazyLock<tokio::sync::Mutex<HashMap<String, SpeedTracker>>> =
-    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(HashMap::new()));
 
 fn estimate_remaining_seconds(
     total_bytes: i64,
@@ -450,6 +486,80 @@ pub async fn connect(
     })))
 }
 
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// POST /api/pair - exchange a desktop-shown 6-digit PIN for the pairing
+/// capability, so a browser that cannot scan the QR code can still connect.
+/// The code is single-use, expires after 5 minutes, and is guarded against
+/// brute force with a per-IP lockout after five failures.
+pub async fn pair_with_pin(
+    State(state): State<SharedState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Json(body): Json<PairRequest>,
+) -> AppResult<Json<serde_json::Value>> {
+    let pin = body.pin.trim().to_string();
+    let peer_ip = addr.ip().to_string();
+    let now = now_secs();
+
+    let mut s = state.lock().await;
+
+    // Brute-force lockout: too many failures blocks this IP for 10 minutes.
+    if let Some(attempt) = s.pairing_attempts.get(&peer_ip) {
+        if now < attempt.locked_until {
+            tracing::warn!("Pairing PIN rejected: IP {} is locked out", peer_ip);
+            return Err(AppError::InvalidToken);
+        }
+    }
+
+    let Some(pairing) = s.pairing_pin.as_ref() else {
+        return Err(AppError::InvalidToken);
+    };
+    if now > pairing.expires_at {
+        // Expired: drop it so the desktop must refresh before another try.
+        s.pairing_pin = None;
+        return Err(AppError::InvalidToken);
+    }
+
+    if pairing.code != pin {
+        let attempt = s
+            .pairing_attempts
+            .entry(peer_ip.clone())
+            .or_insert(PairingAttempt {
+                failures: 0,
+                locked_until: 0,
+            });
+        attempt.failures += 1;
+        if attempt.failures >= 5 {
+            attempt.locked_until = now + 600;
+            attempt.failures = 0;
+            tracing::warn!("Pairing PIN locked out for IP {} after 5 failures", peer_ip);
+        }
+        return Err(AppError::InvalidToken);
+    }
+
+    // Success: consume the code and hand out the pairing capability so the
+    // phone continues with the exact same flow as a scanned QR code.
+    s.pairing_pin = None;
+    s.pairing_attempts.remove(&peer_ip);
+    let token = s.connection_token.clone();
+    let device_name = s.device_name.clone();
+    let network_name = s.network_name.clone();
+
+    tracing::info!("Device paired via PIN from {}", peer_ip);
+
+    Ok(Json(json!({
+        "valid": true,
+        "token": token,
+        "deviceName": device_name,
+        "networkName": network_name,
+    })))
+}
+
 /// POST /api/devices/register - register a new device
 pub async fn register_device(
     State(state): State<SharedState>,
@@ -527,7 +637,7 @@ pub async fn register_device(
 
     let (device, created) = {
         let s = state.lock().await;
-        s.db.register_or_refresh_device(&candidate)?
+        s.db.register_or_refresh_device(&candidate, body.session_token.as_deref())?
     };
 
     // Re-emit a pending request on every registration. This makes the desktop
@@ -609,11 +719,25 @@ pub async fn create_transfer(
     // Validate session
     let device = validate_approved_session(&state, &body.session_token).await?;
 
-    let max_file_size = {
+    // The database owns its own lock, so DB-heavy work never holds the global
+    // state lock that WebSocket fan-out and heartbeat also contend on.
+    let db = {
         let s = state.lock().await;
-        s.db.get_settings()?.max_file_size
+        s.db.clone()
     };
+
+    let max_file_size = db.get_settings()?.max_file_size;
     let total_bytes = validate_transfer_files(&body.files, max_file_size)?;
+    validate_transfer_chunk_budget(&body.files)?;
+
+    // Bound how many transfers one device may keep in flight (anti-DoS).
+    let active = db.count_active_transfers_for_device(&device.id)?;
+    if active >= MAX_ACTIVE_TRANSFERS_PER_DEVICE {
+        return Err(AppError::Internal(format!(
+            "Too many active transfers for this device (maximum: {})",
+            MAX_ACTIVE_TRANSFERS_PER_DEVICE
+        )));
+    }
 
     let transfer_id = uuid::Uuid::new_v4().to_string();
     let now = std::time::SystemTime::now()
@@ -641,61 +765,58 @@ pub async fn create_transfer(
 
     let mut file_responses: Vec<TransferFileResponse> = Vec::new();
 
-    {
-        let s = state.lock().await;
-        s.db.insert_transfer(&transfer)?;
+    db.insert_transfer(&transfer)?;
 
-        for file_entry in &body.files {
-            let file_name = transfer::sanitize_filename(&file_entry.name)?;
-            let file_id = uuid::Uuid::new_v4().to_string();
-            let total_chunks_i64 = if file_entry.size == 0 {
-                0
-            } else {
-                (file_entry.size - 1) / CHUNK_SIZE + 1
-            };
-            let total_chunks = i32::try_from(total_chunks_i64).map_err(|_| {
-                AppError::Internal("File requires too many transfer chunks".to_string())
-            })?;
+    for file_entry in &body.files {
+        let file_name = transfer::sanitize_filename(&file_entry.name)?;
+        let file_id = uuid::Uuid::new_v4().to_string();
+        let total_chunks_i64 = if file_entry.size == 0 {
+            0
+        } else {
+            (file_entry.size - 1) / CHUNK_SIZE + 1
+        };
+        let total_chunks = i32::try_from(total_chunks_i64).map_err(|_| {
+            AppError::Internal("File requires too many transfer chunks".to_string())
+        })?;
 
-            let file_record = TransferFileRecord {
-                id: file_id.clone(),
-                transfer_id: transfer_id.clone(),
-                name: file_name.clone(),
-                size: file_entry.size,
-                mime_type: file_entry.mime_type.clone(),
-                chunk_size: CHUNK_SIZE,
-                total_chunks,
-                completed_chunks: 0,
-                sha256: None,
-                save_path: None,
-                status: "pending".to_string(),
-            };
+        let file_record = TransferFileRecord {
+            id: file_id.clone(),
+            transfer_id: transfer_id.clone(),
+            name: file_name.clone(),
+            size: file_entry.size,
+            mime_type: file_entry.mime_type.clone(),
+            chunk_size: CHUNK_SIZE,
+            total_chunks,
+            completed_chunks: 0,
+            sha256: None,
+            save_path: None,
+            status: "pending".to_string(),
+        };
 
-            s.db.insert_transfer_file(&file_record)?;
+        db.insert_transfer_file(&file_record)?;
 
-            // Create chunk records
-            let mut chunks = Vec::new();
-            for i in 0..total_chunks {
-                let offset = i as i64 * CHUNK_SIZE;
-                let chunk_size = std::cmp::min(CHUNK_SIZE, file_entry.size - offset);
-                chunks.push(ChunkRecord {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    file_id: file_id.clone(),
-                    chunk_index: i,
-                    offset,
-                    size: chunk_size,
-                    completed: false,
-                });
-            }
-            s.db.insert_chunks(&chunks)?;
-
-            file_responses.push(TransferFileResponse {
-                id: file_id,
-                name: file_name,
-                chunk_size: CHUNK_SIZE,
-                total_chunks,
+        // Create chunk records
+        let mut chunks = Vec::new();
+        for i in 0..total_chunks {
+            let offset = i as i64 * CHUNK_SIZE;
+            let chunk_size = std::cmp::min(CHUNK_SIZE, file_entry.size - offset);
+            chunks.push(ChunkRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                file_id: file_id.clone(),
+                chunk_index: i,
+                offset,
+                size: chunk_size,
+                completed: false,
             });
         }
+        db.insert_chunks(&chunks)?;
+
+        file_responses.push(TransferFileResponse {
+            id: file_id,
+            name: file_name,
+            chunk_size: CHUNK_SIZE,
+            total_chunks,
+        });
     }
 
     // Broadcast transfer created
@@ -833,7 +954,7 @@ pub async fn upload_chunk(
         transfer::ensure_receive_folder(&receive_path)?;
         let temp_dir = transfer::temp_transfer_dir(&receive_path, &transfer_id);
         transfer::ensure_receive_folder(&temp_dir)?;
-        transfer::temp_file_path(&receive_path, &transfer_id, &file_record.name)
+        transfer::temp_file_path(&receive_path, &transfer_id, &file_record.id)
     };
 
     {
@@ -892,28 +1013,22 @@ pub async fn upload_chunk(
         (completed, transfer.total_bytes, total_transferred)
     };
 
-    // Track speed
-    let speed = {
-        let mut trackers = SPEED_TRACKERS.lock().await;
-        let tracker = trackers
+    // Track speed and broadcast progress under one state lock so the speed
+    // tracker, telemetry cache, and event bus stay consistent.
+    {
+        let mut s = state.lock().await;
+        let tracker = s
+            .speed_trackers
             .entry(transfer_id.clone())
             .or_insert_with(SpeedTracker::new);
         tracker.record(transferred_bytes);
-        tracker.speed_bytes_per_second()
-    };
-
-    // Calculate progress
-    let progress = if total_bytes > 0 {
-        (transferred_bytes as f64 / total_bytes as f64) * 100.0
-    } else {
-        0.0
-    };
-
-    let remaining_seconds = estimate_remaining_seconds(total_bytes, transferred_bytes, speed);
-
-    // Broadcast progress
-    let _ = {
-        let mut s = state.lock().await;
+        let speed = tracker.speed_bytes_per_second();
+        let progress = if total_bytes > 0 {
+            (transferred_bytes as f64 / total_bytes as f64) * 100.0
+        } else {
+            0.0
+        };
+        let remaining_seconds = estimate_remaining_seconds(total_bytes, transferred_bytes, speed);
         s.transfer_telemetry.insert(
             transfer_id.clone(),
             TransferTelemetry {
@@ -921,7 +1036,7 @@ pub async fn upload_chunk(
                 remaining_seconds,
             },
         );
-        s.event_tx.send(WsEvent::TransferProgress {
+        let _ = s.event_tx.send(WsEvent::TransferProgress {
             transfer_id: transfer_id.clone(),
             file_name: file_record.name.clone(),
             transferred_bytes,
@@ -929,7 +1044,7 @@ pub async fn upload_chunk(
             progress,
             speed_bytes_per_second: speed,
             remaining_seconds,
-        })
+        });
     };
 
     // Broadcast transfer started on first chunk
@@ -1072,7 +1187,7 @@ pub async fn complete_transfer(
             })?;
             PathBuf::from(tp)
         } else {
-            transfer::temp_file_path(&receive_path, &transfer_id, &file_record.name)
+            transfer::temp_file_path(&receive_path, &transfer_id, &file_record.id)
         };
         let expected_size = file_record.size.max(0) as u64;
 
@@ -1274,12 +1389,12 @@ pub async fn complete_transfer(
         )
         .await;
 
-        // Clean up speed tracker
+        // Clean up the speed tracker and telemetry together
         {
-            let mut trackers = SPEED_TRACKERS.lock().await;
-            trackers.remove(&transfer_id);
+            let mut s = state.lock().await;
+            s.speed_trackers.remove(&transfer_id);
+            s.transfer_telemetry.remove(&transfer_id);
         }
-        state.lock().await.transfer_telemetry.remove(&transfer_id);
 
         tracing::info!("Relay upload complete, waiting for target: {}", transfer_id);
 
@@ -1315,12 +1430,12 @@ pub async fn complete_transfer(
     )
     .await;
 
-    // Clean up speed tracker
+    // Clean up the speed tracker and telemetry together
     {
-        let mut trackers = SPEED_TRACKERS.lock().await;
-        trackers.remove(&transfer_id);
+        let mut s = state.lock().await;
+        s.speed_trackers.remove(&transfer_id);
+        s.transfer_telemetry.remove(&transfer_id);
     }
-    state.lock().await.transfer_telemetry.remove(&transfer_id);
 
     tracing::info!("Transfer completed: {}", transfer_id);
 
@@ -1375,8 +1490,7 @@ pub async fn cancel_transfer(
     } else {
         let receive_path = PathBuf::from(&receive_folder);
         for file_record in &files {
-            let temp_path =
-                transfer::temp_file_path(&receive_path, &transfer_id, &file_record.name);
+            let temp_path = transfer::temp_file_path(&receive_path, &transfer_id, &file_record.id);
             if temp_path.exists() {
                 if let Err(e) = tokio::fs::remove_file(&temp_path).await {
                     tracing::error!("Failed to remove temp file {}: {}", temp_path.display(), e);
@@ -1398,12 +1512,12 @@ pub async fn cancel_transfer(
 
     record_transfer_event(&state, &transfer_id, "cancelled", json!({})).await;
 
-    // Clean up speed tracker
+    // Clean up the speed tracker and telemetry together
     {
-        let mut trackers = SPEED_TRACKERS.lock().await;
-        trackers.remove(&transfer_id);
+        let mut s = state.lock().await;
+        s.speed_trackers.remove(&transfer_id);
+        s.transfer_telemetry.remove(&transfer_id);
     }
-    state.lock().await.transfer_telemetry.remove(&transfer_id);
 
     tracing::info!("Transfer cancelled: {}", transfer_id);
 
@@ -1499,24 +1613,6 @@ pub async fn list_transfers(
 
 // --- New request types for bidirectional transfers ---
 
-/* Retired non-routed desktop send endpoint. Native commands own that flow.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SendFileEntry {
-    pub name: String,
-    pub size: i64,
-    pub path: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SendTransferRequest {
-    pub files: Vec<SendFileEntry>,
-    pub target_device_id: String,
-    pub session_token: String,
-}
-
-*/
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateRelayRequest {
@@ -1536,115 +1632,6 @@ fn now_ts() -> String {
 
 // --- Bidirectional transfer handlers ---
 
-/* Retired non-routed /api/transfers/send implementation.
-/// POST /api/transfers/send - Desktop creates a send task (files live on the
-/// desktop and are referenced by filesystem path).
-pub async fn send_transfer(
-    State(state): State<SharedState>,
-    Json(body): Json<SendTransferRequest>,
-) -> AppResult<Json<serde_json::Value>> {
-    // The desktop authenticates with the connection token or a device session.
-    let device = validate_session(&state, &body.session_token).await?;
-
-    if body.files.is_empty() {
-        return Err(AppError::Internal("No files specified".to_string()));
-    }
-
-    // Verify the target device exists.
-    {
-        let s = state.lock().await;
-        s.db.get_device_by_id(&body.target_device_id)?
-            .ok_or(AppError::DeviceNotFound)?;
-    }
-
-    let transfer_id = uuid::Uuid::new_v4().to_string();
-    let now = now_ts();
-    let total_bytes: i64 = body.files.iter().map(|f| f.size).sum();
-
-    let transfer = TransferRecord {
-        id: transfer_id.clone(),
-        device_id: device.id.clone(),
-        direction: "download_from_host".to_string(),
-        status: "pending".to_string(),
-        total_bytes,
-        transferred_bytes: 0,
-        file_count: body.files.len() as i32,
-        save_path: None,
-        created_at: now,
-        completed_at: None,
-        target_device_id: Some(body.target_device_id.clone()),
-        relay_stage: None,
-        accepted_at: None,
-        expires_at: None,
-        paused_at: None,
-    };
-
-    let mut file_ids: Vec<String> = Vec::new();
-    {
-        let s = state.lock().await;
-        s.db.insert_transfer(&transfer)?;
-
-        for file_entry in &body.files {
-            let file_id = uuid::Uuid::new_v4().to_string();
-            file_ids.push(file_id.clone());
-            let file_record = TransferFileRecord {
-                id: file_id,
-                transfer_id: transfer_id.clone(),
-                name: file_entry.name.clone(),
-                size: file_entry.size,
-                mime_type: String::new(),
-                chunk_size: CHUNK_SIZE,
-                total_chunks: 0,
-                completed_chunks: 0,
-                sha256: None,
-                // Store the source path on the desktop so the download
-                // endpoint can locate the file. The path is never exposed
-                // to the client – only the file_id is used in URLs.
-                save_path: Some(file_entry.path.clone()),
-                status: "pending".to_string(),
-            };
-            s.db.insert_transfer_file(&file_record)?;
-        }
-    }
-
-    // Broadcast transfer.requested so the target device's UI can prompt the user.
-    let files_info: Vec<FileInfo> = body
-        .files
-        .iter()
-        .zip(file_ids.iter())
-        .map(|(f, id)| FileInfo {
-            id: id.clone(),
-            name: f.name.clone(),
-            size: f.size,
-        })
-        .collect();
-
-    let _ = {
-        let s = state.lock().await;
-        s.event_tx.send(WsEvent::TransferRequested {
-            transfer_id: transfer_id.clone(),
-            source_device_name: device.name.clone(),
-            files: files_info,
-            total_bytes,
-            target_device_id: body.target_device_id.clone(),
-        })
-    };
-
-    tracing::info!(
-        "Send transfer created: {} ({} files, {} bytes) -> device {}",
-        transfer_id,
-        body.files.len(),
-        total_bytes,
-        body.target_device_id
-    );
-
-    Ok(Json(json!({
-        "transferId": transfer_id,
-        "status": "pending",
-    })))
-}
-
-*/
 /// POST /api/transfers/:id/accept - Target device accepts a pending transfer.
 /// Creates per-file download sessions (UUID tokens, 30-minute expiry).
 pub async fn accept_transfer(
@@ -1890,6 +1877,22 @@ pub async fn download_file(
     };
 
     let path = std::path::Path::new(&file_path_str);
+
+    // Boundary check: relay files must live inside the per-transfer relay
+    // directory. Desktop-originated downloads point at user-picked source
+    // paths and are trusted. This keeps a corrupted or forged database record
+    // from streaming arbitrary files off the host disk.
+    if transfer.direction == "relay" {
+        let receive_folder = {
+            let s = state.lock().await;
+            s.receive_folder.clone()
+        };
+        let expected_dir = relay_temp_dir(std::path::Path::new(&receive_folder), &transfer_id);
+        if !path.starts_with(&expected_dir) {
+            return Err(AppError::Internal("Invalid relay file path".to_string()));
+        }
+    }
+
     if !path.exists() {
         return Err(AppError::Internal(
             "Source file not found on disk".to_string(),
@@ -1910,6 +1913,20 @@ pub async fn download_file(
         file_record.mime_type.clone()
     };
 
+    // Optional bandwidth cap (host -> device) from settings, in bytes/sec.
+    let speed_limit_bytes_per_sec = {
+        let s = state.lock().await;
+        let mbps =
+            s.db.get_settings()
+                .map(|settings| settings.download_speed_limit_mbps)
+                .unwrap_or(0);
+        if mbps > 0 {
+            mbps as u64 * 1024 * 1024
+        } else {
+            0
+        }
+    };
+
     // Set up a shared byte counter for progress tracking.
     let bytes_counter = Arc::new(AtomicU64::new(0));
 
@@ -1920,6 +1937,7 @@ pub async fn download_file(
         file_size,
         &mime_type,
         bytes_counter.clone(),
+        speed_limit_bytes_per_sec,
     )
     .await
     .map_err(AppError::Io)?;
@@ -2326,15 +2344,23 @@ pub async fn create_relay(
         return Err(AppError::InvalidToken);
     }
 
-    let (source_approved, target_approved, target_online, max_file_size, receive_folder) = {
+    // The database owns its own lock, so DB-heavy work never holds the global
+    // state lock that WebSocket fan-out and heartbeat also contend on.
+    let db = {
         let s = state.lock().await;
-        let source =
-            s.db.get_device_by_id(&body.source_device_id)?
-                .ok_or(AppError::DeviceNotFound)?;
-        let target =
-            s.db.get_device_by_id(&body.target_device_id)?
-                .ok_or(AppError::DeviceNotFound)?;
-        let max_file_size = s.db.get_settings()?.max_file_size;
+        s.db.clone()
+    };
+
+    let (source_approved, target_approved, target_online, max_file_size, receive_folder) = {
+        let source = db
+            .get_device_by_id(&body.source_device_id)?
+            .ok_or(AppError::DeviceNotFound)?;
+        let target = db
+            .get_device_by_id(&body.target_device_id)?
+            .ok_or(AppError::DeviceNotFound)?;
+        let max_file_size = db.get_settings()?.max_file_size;
+        // Only the tiny online/receive-folder reads need the state lock.
+        let s = state.lock().await;
         (
             source.approved,
             target.approved,
@@ -2353,6 +2379,16 @@ pub async fn create_relay(
     }
 
     let total_bytes = validate_transfer_files(&body.files, max_file_size)?;
+    validate_transfer_chunk_budget(&body.files)?;
+
+    // Bound how many transfers one device may keep in flight (anti-DoS).
+    let active = db.count_active_transfers_for_device(&device.id)?;
+    if active >= MAX_ACTIVE_TRANSFERS_PER_DEVICE {
+        return Err(AppError::Internal(format!(
+            "Too many active transfers for this device (maximum: {})",
+            MAX_ACTIVE_TRANSFERS_PER_DEVICE
+        )));
+    }
 
     let transfer_id = uuid::Uuid::new_v4().to_string();
     let now = now_ts();
@@ -2389,90 +2425,88 @@ pub async fn create_relay(
 
     let mut file_responses: Vec<TransferFileResponse> = Vec::new();
 
-    {
-        let s = state.lock().await;
-        s.db.insert_transfer(&transfer)?;
+    db.insert_transfer(&transfer)?;
 
-        // Relay cleanup: temp files are cleaned up after 24 hours.
-        let cleanup_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() + 24 * 3600)
-            .unwrap_or(0);
-        let cleanup_at = cleanup_secs.to_string();
+    // Relay cleanup: temp files are cleaned up after 24 hours.
+    let cleanup_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() + 24 * 3600)
+        .unwrap_or(0);
+    let cleanup_at = cleanup_secs.to_string();
 
-        for file_entry in &body.files {
-            let file_name = transfer::sanitize_filename(&file_entry.name)?;
-            let file_id = uuid::Uuid::new_v4().to_string();
-            let total_chunks_i64 = if file_entry.size == 0 {
-                0
-            } else {
-                (file_entry.size - 1) / CHUNK_SIZE + 1
-            };
-            let total_chunks = i32::try_from(total_chunks_i64).map_err(|_| {
-                AppError::Internal("File requires too many transfer chunks".to_string())
-            })?;
+    for file_entry in &body.files {
+        let file_name = transfer::sanitize_filename(&file_entry.name)?;
+        let file_id = uuid::Uuid::new_v4().to_string();
+        let total_chunks_i64 = if file_entry.size == 0 {
+            0
+        } else {
+            (file_entry.size - 1) / CHUNK_SIZE + 1
+        };
+        let total_chunks = i32::try_from(total_chunks_i64).map_err(|_| {
+            AppError::Internal("File requires too many transfer chunks".to_string())
+        })?;
 
-            let file_record = TransferFileRecord {
-                id: file_id.clone(),
-                transfer_id: transfer_id.clone(),
-                name: file_name.clone(),
-                size: file_entry.size,
-                mime_type: file_entry.mime_type.clone(),
-                chunk_size: CHUNK_SIZE,
-                total_chunks,
-                completed_chunks: 0,
-                sha256: None,
-                save_path: None,
-                status: "pending".to_string(),
-            };
-            s.db.insert_transfer_file(&file_record)?;
+        let file_record = TransferFileRecord {
+            id: file_id.clone(),
+            transfer_id: transfer_id.clone(),
+            name: file_name.clone(),
+            size: file_entry.size,
+            mime_type: file_entry.mime_type.clone(),
+            chunk_size: CHUNK_SIZE,
+            total_chunks,
+            completed_chunks: 0,
+            sha256: None,
+            save_path: None,
+            status: "pending".to_string(),
+        };
+        db.insert_transfer_file(&file_record)?;
 
-            // Create chunk records so the source device can upload in chunks.
-            let mut chunks = Vec::new();
-            for i in 0..total_chunks {
-                let offset = i as i64 * CHUNK_SIZE;
-                let chunk_size = std::cmp::min(CHUNK_SIZE, file_entry.size - offset);
-                chunks.push(ChunkRecord {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    file_id: file_id.clone(),
-                    chunk_index: i,
-                    offset,
-                    size: chunk_size,
-                    completed: false,
-                });
-            }
-            s.db.insert_chunks(&chunks)?;
-
-            // Relay temp path: {relay_dir}/.{filename}.uploading. upload_chunk
-            // writes chunks here and complete_transfer verifies/hashes it.
-            let temp_path = relay_dir.join(format!(".{}.uploading", file_name));
-
-            let relay_file = RelayFile {
+        // Create chunk records so the source device can upload in chunks.
+        let mut chunks = Vec::new();
+        for i in 0..total_chunks {
+            let offset = i as i64 * CHUNK_SIZE;
+            let chunk_size = std::cmp::min(CHUNK_SIZE, file_entry.size - offset);
+            chunks.push(ChunkRecord {
                 id: uuid::Uuid::new_v4().to_string(),
-                transfer_id: transfer_id.clone(),
                 file_id: file_id.clone(),
-                temp_path: temp_path.to_string_lossy().to_string(),
-                cleanup_at: cleanup_at.clone(),
-                cleaned: false,
-            };
-            s.db.insert_relay_file(&relay_file)?;
-
-            file_responses.push(TransferFileResponse {
-                id: file_id,
-                name: file_name,
-                chunk_size: CHUNK_SIZE,
-                total_chunks,
+                chunk_index: i,
+                offset,
+                size: chunk_size,
+                completed: false,
             });
         }
+        db.insert_chunks(&chunks)?;
+
+        // Relay temp path: {relay_dir}/.{filename}.uploading. upload_chunk
+        // writes chunks here and complete_transfer verifies/hashes it.
+        let temp_path = relay_dir.join(format!(".{}.uploading", file_id));
+
+        let relay_file = RelayFile {
+            id: uuid::Uuid::new_v4().to_string(),
+            transfer_id: transfer_id.clone(),
+            file_id: file_id.clone(),
+            temp_path: temp_path.to_string_lossy().to_string(),
+            cleanup_at: cleanup_at.clone(),
+            cleaned: false,
+        };
+        db.insert_relay_file(&relay_file)?;
+
+        file_responses.push(TransferFileResponse {
+            id: file_id,
+            name: file_name,
+            chunk_size: CHUNK_SIZE,
+            total_chunks,
+        });
     }
 
-    let _ = {
+    let event_tx = {
         let s = state.lock().await;
-        s.event_tx.send(WsEvent::TransferRelayStageChanged {
-            transfer_id: transfer_id.clone(),
-            stage: "uploading_to_host".to_string(),
-        })
+        s.event_tx.clone()
     };
+    let _ = event_tx.send(WsEvent::TransferRelayStageChanged {
+        transfer_id: transfer_id.clone(),
+        stage: "uploading_to_host".to_string(),
+    });
 
     tracing::info!(
         "Relay transfer created: {} ({} files, {} bytes) {} -> {}",

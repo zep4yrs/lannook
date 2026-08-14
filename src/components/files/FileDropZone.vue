@@ -6,6 +6,7 @@ import { useAppStore } from "@/stores/app";
 import { useTransfersStore } from "@/stores/transfers";
 import { useDragDrop } from "@/composables/useDragDrop";
 import { pickFiles } from "@/services/tauri";
+import { useLocale } from "@/i18n";
 
 const props = defineProps<{
   targetName: string;
@@ -13,6 +14,7 @@ const props = defineProps<{
 
 const app = useAppStore();
 const transfers = useTransfersStore();
+const { t } = useLocale();
 const { dragging, onDragEnter, onDragOver, onDragLeave, onDrop } = useDragDrop();
 const detecting = ref(false);
 
@@ -22,7 +24,7 @@ function handleFiles(files: Array<{ name: string; size: number; path?: string }>
   setTimeout(() => {
     transfers.addPendingFiles(files);
     detecting.value = false;
-    app.pushToast("success", `已添加 ${files.length} 个文件`, "进入待发送队列");
+    app.pushToast("success", t("file.addedCount", { count: files.length }), t("file.queued"));
   }, 350);
 }
 
@@ -55,10 +57,10 @@ async function onSelectClick() {
   >
     <UploadCloud :size="32" :stroke-width="2" style="color: var(--color-text-tertiary)" class="mb-2" />
     <span style="font-size: var(--text-sm); color: var(--color-text-primary); font-weight: var(--font-weight-medium)">
-      拖入文件发送到 {{ props.targetName }}
+      {{ t("file.dropTo", { name: props.targetName }) }}
     </span>
     <span class="mt-1" style="font-size: var(--text-xs); color: var(--color-text-tertiary)">
-      支持照片、视频、文档、压缩包和文件夹。
+      {{ t("file.supportedTypes") }}
     </span>
     <a
       href="#"
@@ -67,7 +69,7 @@ async function onSelectClick() {
       @click.stop.prevent="onSelectClick"
     >
       <FolderOpen :size="12" :stroke-width="2.5" />
-      或点击选择文件
+      {{ t("file.orClick") }}
     </a>
 
     <!-- 拖入覆盖反馈（设计稿 文件拖入反馈.html） -->
@@ -75,10 +77,10 @@ async function onSelectClick() {
       <div v-if="dragging" class="drag-overlay">
         <UploadCloud class="drag-overlay-icon" :size="56" :stroke-width="1.75" />
         <span style="font-size: var(--text-xl); font-weight: var(--font-weight-semibold); color: var(--color-primary)">
-          释放即可添加文件
+          {{ t("file.dropRelease") }}
         </span>
         <span class="mt-1.5" style="font-size: var(--text-base); color: var(--color-text-secondary)">
-          {{ detecting ? "正在检测文件..." : "正在检测文件..." }}
+          {{ t("file.detecting") }}
         </span>
       </div>
     </Transition>

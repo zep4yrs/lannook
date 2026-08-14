@@ -168,16 +168,16 @@ function selectDevice(device: Device) {
   if (!device.approved) {
     appStore.pushToast(
       "warning",
-      "设备尚未授权",
-      `请先在“设备”页面批准 ${device.name}，再发送文件。`
+      t("home.deviceNotAuthorized"),
+      t("home.deviceNotAuthorizedDescription", { name: device.name })
     );
     return;
   }
   if (!device.online) {
     appStore.pushToast(
       "warning",
-      "设备离线",
-      `${device.name} 当前不在线，无法作为发送目标`
+      t("home.deviceOffline"),
+      t("home.deviceOfflineDescription", { name: device.name })
     );
     return;
   }
@@ -192,11 +192,11 @@ function getErrorMessage(error: unknown): string {
     if (typeof value.message === "string" && value.message.trim()) return value.message;
     if (typeof value.error === "string" && value.error.trim()) return value.error;
   }
-  return "未能发出文件请求，请确认手机保持连接后重试。";
+  return t("home.sendRequestFailed");
 }
 
 function handlePreview(file: PendingTransferFile) {
-  appStore.pushToast("info", "预览功能开发中", file.name);
+  appStore.pushToast("info", t("home.previewDev"), file.name);
 }
 
 function removePendingFile(id: string) {
@@ -259,7 +259,7 @@ async function addPendingFilesFromPaths(paths: string[]) {
     addPendingFiles(await getFileMetadata(paths));
   } catch (error) {
     console.error("[home] Failed to read dropped files:", error);
-    appStore.pushToast("error", "无法读取文件", "请确认文件仍然存在且可访问。");
+    appStore.pushToast("error", t("home.readFileFailed"), t("home.readFileFailedDescription"));
   }
 }
 
@@ -277,7 +277,7 @@ function filterOversized(files: PendingFileInput[]): PendingFileInput[] {
   if (rejected.length > 0) {
     appStore.pushToast(
       "warning",
-      "文件过大",
+      t("home.fileTooLarge"),
       `已跳过 ${rejected.length} 个超过大小限制的文件：${rejected.join("、")}`
     );
   }
@@ -306,7 +306,7 @@ async function handleSend() {
         .filter((p): p is string => p != null);
 
       if (filePaths.length === 0) {
-        throw new Error("没有可发送的文件路径");
+        throw new Error(t("home.noFilePaths"));
       }
 
       sendStatus.value = "sending";
@@ -318,7 +318,7 @@ async function handleSend() {
       void transfersStore.fetchTransfers();
       appStore.pushToast(
         "success",
-        "已发出接收请求",
+        t("home.receiveRequestSent"),
         `请在 ${targetDevice.name} 上确认下载文件。`
       );
 
@@ -327,12 +327,12 @@ async function handleSend() {
         sendStatus.value = "idle";
       }, 3000);
     } else {
-      throw new Error("浏览器控制页不能读取本机文件路径，请使用桌面应用发送文件。");
+      throw new Error(t("home.browserCannotRead"));
     }
   } catch (err: unknown) {
     sendStatus.value = "idle";
     sendError.value = getErrorMessage(err);
-    appStore.pushToast("error", "未能发出文件", sendError.value);
+    appStore.pushToast("error", t("home.sendFailedTitle"), sendError.value);
   }
 }
 

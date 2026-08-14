@@ -41,6 +41,10 @@ tokio-util = { version = "0.7", features = ["io"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2.10.1"
 
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["json"] }
+criterion = "0.5"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",

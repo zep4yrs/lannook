@@ -2,10 +2,12 @@
 // 手机端已选文件项
 import { X } from "lucide-vue-next";
 import FileIcon from "./FileIcon.vue";
+import { useLocale } from "@/i18n";
 import type { TransferFile } from "@/types";
 import { formatBytes } from "@/utils/format";
 
 defineProps<{ file: TransferFile; last?: boolean }>();
+const { t } = useLocale();
 const emit = defineEmits<{ remove: [] }>();
 </script>
 
@@ -30,7 +32,7 @@ const emit = defineEmits<{ remove: [] }>();
     <button
       class="remove-btn w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 transition-colors duration-200"
       style="color: var(--color-text-tertiary)"
-      aria-label="移除"
+      :aria-label="t('common.remove')"
       @click="emit('remove')"
     >
       <X :size="16" :stroke-width="2" />

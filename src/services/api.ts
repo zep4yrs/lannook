@@ -43,6 +43,21 @@ export function validateToken(token: string) {
   return request(`/api/connect?token=${encodeURIComponent(token)}`);
 }
 
+export interface PairResult {
+  valid: boolean;
+  token: string;
+  deviceName: string;
+  networkName: string;
+}
+
+/** Exchange a desktop-shown 6-digit PIN for the pairing capability. */
+export function pairWithPin(pin: string) {
+  return request<PairResult>("/api/pair", {
+    method: "POST",
+    body: JSON.stringify({ pin }),
+  });
+}
+
 export interface HostStatus {
   localIp: string;
   name: string;
@@ -63,6 +78,7 @@ export function registerDevice(data: {
   userAgent: string;
   clientId: string;
   token: string;
+  sessionToken?: string;
 }) {
   return request("/api/devices/register", {
     method: "POST",
@@ -257,11 +273,25 @@ export function createRelay(
   });
 }
 
-export function getDownloadUrl(
+/**
+ * Download a received file. The one-time download token travels in the
+ * Authorization header instead of the URL so it never lands in browser
+ * history or server access logs. The returned Blob should be revoked by
+ * the caller after saving.
+ */
+export async function downloadFile(
   transferId: string,
   fileId: string,
   token: string,
   deviceId: string
-): string {
-  return `${BASE}/api/transfers/${transferId}/files/${fileId}/download?token=${encodeURIComponent(token)}&deviceId=${encodeURIComponent(deviceId)}`;
+): Promise<Blob> {
+  const url = `${BASE}/api/transfers/${transferId}/files/${fileId}/download?deviceId=${encodeURIComponent(deviceId)}`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    const payload: unknown = await res.json().catch(() => null);
+    throw new Error(getApiErrorMessage(payload, res.status));
+  }
+  return res.blob();
 }

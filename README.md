@@ -35,7 +35,7 @@ LanNook 处理的是一个很具体的场景：文件就在手机或身边的电
 | macOS 10.15+，Intel | `LanNook_*_x64.dmg` | Intel Mac |
 | Linux x64 | `LanNook_*_amd64.AppImage` 或 `LanNook_*_amd64.deb` | AppImage 通用；deb 适合 Debian/Ubuntu |
 
-当前没有 Windows ARM、Windows 32 位或 Linux ARM 安装包。发行包也尚未使用 Windows Authenticode 或 Apple 公证，系统可能显示“未知发布者”一类提示；请只从本仓库的 Release 页面下载。Release 中的 `.sig` 是应用更新校验文件，不等同于操作系统代码签名。
+当前没有 Windows ARM、Windows 32 位或 Linux ARM 安装包。发行包默认不进行操作系统级签名，系统可能显示“未知发布者”一类提示；请只从本仓库的 Release 页面下载。Release 中的 `.sig` 是应用更新校验文件，不等同于操作系统代码签名。如需为手工分发的 Windows 安装包补充零成本的 Authenticode 签名，可运行 `scripts/sign-windows.ps1`（见 [docs/signing.md](docs/signing.md)）。
 
 ## 从 LYNQO 升级
 

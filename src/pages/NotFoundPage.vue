@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { useRouter } from "vue-router";
 import { Home } from "lucide-vue-next";
+import { useLocale } from "@/i18n";
 
 const router = useRouter();
+const { t } = useLocale();
 
 function goHome() {
   router.push("/");
@@ -12,11 +14,11 @@ function goHome() {
 <template>
   <div class="not-found">
     <div class="not-found-code">404</div>
-    <p class="not-found-text">页面未找到</p>
-    <p class="not-found-hint">你访问的路径不存在或已被移动。</p>
+    <p class="not-found-text">{{ t("notFound.title") }}</p>
+    <p class="not-found-hint">{{ t("notFound.hint") }}</p>
     <button class="not-found-btn" @click="goHome">
       <Home :size="16" />
-      返回首页
+      {{ t("notFound.back") }}
     </button>
   </div>
 </template>

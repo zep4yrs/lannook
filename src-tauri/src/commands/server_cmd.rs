@@ -33,6 +33,8 @@ pub struct ConnectionInfo {
     pub receive_folder: String,
     pub device_name: String,
     pub addresses: Vec<ConnectionAddress>,
+    /// Active 6-digit pairing code (None when unset or expired).
+    pub pin: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -94,6 +96,7 @@ struct SettingsPatch {
     max_file_size: Option<i64>,
     theme_mode: Option<String>,
     authorization_expiry_hours: Option<i64>,
+    download_speed_limit_mbps: Option<i64>,
 }
 
 fn timestamp_to_iso(value: &str) -> String {
@@ -574,6 +577,25 @@ pub async fn regenerate_connection_token(state: State<'_, SharedState>) -> Resul
     Ok(new_token)
 }
 
+/// Generate a fresh 6-digit pairing code for browsers that cannot scan the
+/// QR code. Replaces any previous code and expires after 5 minutes.
+#[tauri::command]
+pub async fn refresh_pairing_pin(state: State<'_, SharedState>) -> Result<String, String> {
+    let mut s = state.lock().await;
+    let code = crate::server::generate_pairing_code();
+    let expires_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64 + 5 * 60)
+        .unwrap_or(0);
+    s.pairing_pin = Some(crate::server::PairingPin {
+        code: code.clone(),
+        expires_at,
+    });
+    s.pairing_attempts.clear();
+    tracing::info!("Pairing PIN refreshed (valid for 5 minutes)");
+    Ok(code)
+}
+
 #[tauri::command]
 pub async fn get_connection_info(state: State<'_, SharedState>) -> Result<ConnectionInfo, String> {
     synchronize_network_state(state.inner()).await;
@@ -600,6 +622,18 @@ pub async fn get_connection_info(state: State<'_, SharedState>) -> Result<Connec
         })
         .collect();
 
+    let pin = s
+        .pairing_pin
+        .as_ref()
+        .filter(|pairing| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(i64::MAX);
+            now <= pairing.expires_at
+        })
+        .map(|pairing| pairing.code.clone());
+
     Ok(ConnectionInfo {
         ip: ip.clone(),
         port: s.port,
@@ -611,6 +645,7 @@ pub async fn get_connection_info(state: State<'_, SharedState>) -> Result<Connec
         receive_folder: s.receive_folder.clone(),
         device_name: s.device_name.clone(),
         addresses,
+        pin,
     })
 }
 
@@ -1115,7 +1150,7 @@ pub async fn cancel_transfer(
         let receive_path = std::path::PathBuf::from(&receive_folder);
         for file_record in &files {
             let temp_path =
-                crate::transfer::temp_file_path(&receive_path, &transfer_id, &file_record.name);
+                crate::transfer::temp_file_path(&receive_path, &transfer_id, &file_record.id);
             if temp_path.exists() {
                 if let Err(e) = tokio::fs::remove_file(&temp_path).await {
                     tracing::error!("Failed to remove temp file {}: {}", temp_path.display(), e);
@@ -1192,6 +1227,12 @@ pub async fn update_settings(
     }
     if let Some(value) = patch.authorization_expiry_hours {
         settings.authorization_expiry_hours = value;
+    }
+    if let Some(value) = patch.download_speed_limit_mbps {
+        if value < 0 {
+            return Err("downloadSpeedLimitMbps must not be negative".to_string());
+        }
+        settings.download_speed_limit_mbps = value;
     }
     std::fs::create_dir_all(&settings.receive_folder)
         .map_err(|e| format!("Unable to create receive folder: {}", e))?;

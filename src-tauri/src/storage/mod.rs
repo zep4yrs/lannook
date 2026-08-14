@@ -144,6 +144,9 @@ pub struct Settings {
     /// `-1` means keep the device permanently trusted.
     #[serde(default)]
     pub authorization_expiry_hours: i64,
+    /// Download throttle in MiB/s (host -> device). `0` disables throttling.
+    #[serde(default)]
+    pub download_speed_limit_mbps: i64,
 }
 
 fn default_max_file_size() -> i64 {
@@ -165,6 +168,7 @@ impl Default for Settings {
             max_file_size: default_max_file_size(),
             theme_mode: default_theme_mode(),
             authorization_expiry_hours: 0,
+            download_speed_limit_mbps: 0,
         }
     }
 }
@@ -601,9 +605,17 @@ impl Database {
     /// Atomically reuse, claim, or create a browser device. Holding one
     /// database transaction across the lookup and insert removes the refresh
     /// race that previously surfaced as a unique-index HTTP 500.
+    ///
+    /// [proven_session_token] lets the caller prove it already holds this
+    /// device's session credential. Without a matching token, an existing
+    /// [client_id] is never treated as an authorization anchor: the caller
+    /// receives a fresh unapproved "shadow" record instead, so a LAN peer that
+    /// copies another device's [client_id] cannot inherit its approval or
+    /// session token.
     pub fn register_or_refresh_device(
         &self,
         candidate: &DeviceRecord,
+        proven_session_token: Option<&str>,
     ) -> AppResult<(DeviceRecord, bool)> {
         let mut conn = self
             .conn
@@ -626,6 +638,10 @@ impl Database {
                 .map_err(|e| AppError::Database(format!("Query device identity failed: {}", e)))?;
 
             if existing.is_none() {
+                // Legacy 1.0.4 records have no stable client_id. Claiming one
+                // requires an exact fingerprint match including the peer IP,
+                // which a LAN attacker cannot forge, so this path may refresh
+                // without a proven session token.
                 existing = tx
                     .query_row(
                         "SELECT id, name, platform, device_type, user_agent, client_id, session_token, approved, trusted, ip, created_at, last_seen, approved_until
@@ -647,43 +663,145 @@ impl Database {
             }
         }
 
+        // An identity found by client_id is only reused when the caller proves
+        // it still holds that record's session credential. A legacy record
+        // (claimed by IP + fingerprint) is itself the proof, so it keeps the
+        // existing behavior.
         if let Some(existing) = existing {
-            let approved = existing.approved || existing.trusted;
-            tx.execute(
-                "UPDATE devices
-                 SET name = ?1, platform = ?2, device_type = ?3, user_agent = ?4,
-                     client_id = ?5, ip = ?6, last_seen = ?7, approved = ?8
-                 WHERE id = ?9",
-                params![
-                    candidate.name,
-                    candidate.platform,
-                    candidate.device_type,
-                    candidate.user_agent,
-                    candidate.client_id,
-                    candidate.ip,
-                    candidate.last_seen,
-                    approved as i32,
-                    existing.id,
-                ],
-            )
-            .map_err(|e| AppError::Database(format!("Refresh device failed: {}", e)))?;
-            tx.execute(
-                "DELETE FROM hidden_devices WHERE device_id = ?1",
-                params![existing.id],
-            )
-            .map_err(|e| AppError::Database(format!("Restore device visibility failed: {}", e)))?;
+            let proven = existing.client_id.is_empty()
+                || proven_session_token == Some(existing.session_token.as_str())
+                || candidate.session_token == existing.session_token;
+            if proven {
+                let approved = existing.approved || existing.trusted;
+                tx.execute(
+                    "UPDATE devices
+                     SET name = ?1, platform = ?2, device_type = ?3, user_agent = ?4,
+                         client_id = ?5, ip = ?6, last_seen = ?7, approved = ?8
+                     WHERE id = ?9",
+                    params![
+                        candidate.name,
+                        candidate.platform,
+                        candidate.device_type,
+                        candidate.user_agent,
+                        candidate.client_id,
+                        candidate.ip,
+                        candidate.last_seen,
+                        approved as i32,
+                        existing.id,
+                    ],
+                )
+                .map_err(|e| AppError::Database(format!("Refresh device failed: {}", e)))?;
+                tx.execute(
+                    "DELETE FROM hidden_devices WHERE device_id = ?1",
+                    params![existing.id],
+                )
+                .map_err(|e| {
+                    AppError::Database(format!("Restore device visibility failed: {}", e))
+                })?;
+
+                let refreshed = tx
+                    .query_row(
+                        "SELECT id, name, platform, device_type, user_agent, client_id, session_token, approved, trusted, ip, created_at, last_seen, approved_until
+                         FROM devices WHERE id = ?1",
+                        params![existing.id],
+                        device_from_row,
+                    )
+                    .map_err(|e| AppError::Database(format!("Read refreshed device failed: {}", e)))?;
+                tx.commit().map_err(|e| {
+                    AppError::Database(format!("Commit device refresh failed: {}", e))
+                })?;
+                return Ok((refreshed, false));
+            }
+        }
+
+        // Unproven identity: never touch the original record. Reuse a
+        // matching unapproved shadow record if one exists, otherwise insert a
+        // fresh one. Shadow records store an empty client_id so the unique
+        // index on the caller's client_id keeps pointing at the original.
+        if !candidate.client_id.is_empty() {
+            let shadow = tx
+                .query_row(
+                    "SELECT id, name, platform, device_type, user_agent, client_id, session_token, approved, trusted, ip, created_at, last_seen, approved_until
+                     FROM devices
+                     WHERE id <> 'desktop' AND client_id = '' AND name = ?1 AND platform = ?2
+                       AND device_type = ?3 AND user_agent = ?4 AND ip = ?5
+                     ORDER BY last_seen DESC LIMIT 1",
+                    params![
+                        candidate.name,
+                        candidate.platform,
+                        candidate.device_type,
+                        candidate.user_agent,
+                        candidate.ip
+                    ],
+                    device_from_row,
+                )
+                .optional()
+                .map_err(|e| AppError::Database(format!("Query shadow device failed: {}", e)))?;
+
+            let shadow_id = match shadow {
+                Some(shadow) => {
+                    tx.execute(
+                        "UPDATE devices
+                         SET name = ?1, platform = ?2, device_type = ?3, user_agent = ?4,
+                             ip = ?5, last_seen = ?6, approved = 0, trusted = 0, approved_until = NULL
+                         WHERE id = ?7",
+                        params![
+                            candidate.name,
+                            candidate.platform,
+                            candidate.device_type,
+                            candidate.user_agent,
+                            candidate.ip,
+                            candidate.last_seen,
+                            shadow.id,
+                        ],
+                    )
+                    .map_err(|e| AppError::Database(format!("Refresh shadow device failed: {}", e)))?;
+                    shadow.id
+                }
+                None => {
+                    let mut shadow = candidate.clone();
+                    shadow.id = uuid::Uuid::new_v4().to_string();
+                    shadow.session_token = uuid::Uuid::new_v4().to_string();
+                    shadow.client_id = String::new();
+                    shadow.approved = false;
+                    shadow.trusted = false;
+                    shadow.approved_until = None;
+                    tx.execute(
+                        "INSERT INTO devices (id, name, platform, device_type, user_agent, client_id, session_token, approved, trusted, ip, created_at, last_seen, approved_until)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                        params![
+                            shadow.id,
+                            shadow.name,
+                            shadow.platform,
+                            shadow.device_type,
+                            shadow.user_agent,
+                            shadow.client_id,
+                            shadow.session_token,
+                            shadow.approved as i32,
+                            shadow.trusted as i32,
+                            shadow.ip,
+                            shadow.created_at,
+                            shadow.last_seen,
+                            shadow.approved_until,
+                        ],
+                    )
+                    .map_err(|e| AppError::Database(format!("Insert shadow device failed: {}", e)))?;
+                    shadow.id
+                }
+            };
 
             let refreshed = tx
                 .query_row(
                     "SELECT id, name, platform, device_type, user_agent, client_id, session_token, approved, trusted, ip, created_at, last_seen, approved_until
                      FROM devices WHERE id = ?1",
-                    params![existing.id],
+                    params![shadow_id],
                     device_from_row,
                 )
-                .map_err(|e| AppError::Database(format!("Read refreshed device failed: {}", e)))?;
-            tx.commit()
-                .map_err(|e| AppError::Database(format!("Commit device refresh failed: {}", e)))?;
-            return Ok((refreshed, false));
+                .map_err(|e| AppError::Database(format!("Read shadow device failed: {}", e)))?;
+            tx.commit().map_err(|e| {
+                AppError::Database(format!("Commit shadow registration failed: {}", e))
+            })?;
+            return Ok((refreshed, true));
         }
 
         tx.execute(
@@ -956,6 +1074,27 @@ impl Database {
 
     // --- Transfer operations ---
 
+    /// Count in-flight transfers owned by a device. Used to bound how many
+    /// concurrent transfers one device may create (anti-DoS).
+    pub fn count_active_transfers_for_device(&self, device_id: &str) -> AppResult<i64> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AppError::Database(format!("Lock poisoned: {}", e)))?;
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM transfers
+                 WHERE device_id = ?1
+                   AND status IN ('pending', 'transferring', 'paused', 'accepted')",
+                params![device_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| AppError::Database(format!("Count active transfers failed: {}", e)))?;
+
+        Ok(count)
+    }
+
     pub fn insert_transfer(&self, transfer: &TransferRecord) -> AppResult<()> {
         let conn = self
             .conn
@@ -1145,6 +1284,69 @@ impl Database {
         tx.commit()
             .map_err(|e| AppError::Database(format!("Commit transfer deletion failed: {}", e)))?;
         Ok(())
+    }
+
+    /// Remove transfer history rows older than `cutoff_secs` unix seconds.
+    /// Completed, cancelled, and failed records are eligible; received files
+    /// on disk are intentionally never removed. Returns the number of
+    /// transfers purged.
+    pub fn purge_old_transfers(&self, cutoff_secs: i64) -> AppResult<usize> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| AppError::Database(format!("Lock poisoned: {}", e)))?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| AppError::Database(format!("Begin transfer purge failed: {}", e)))?;
+
+        let ids: Vec<String> = {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT id FROM transfers
+                     WHERE status IN ('completed', 'cancelled', 'failed')
+                       AND CAST(completed_at AS INTEGER) < ?1",
+                )
+                .map_err(|e| AppError::Database(format!("Prepare transfer purge failed: {}", e)))?;
+            let rows = stmt
+                .query_map(params![cutoff_secs], |row| row.get::<_, String>(0))
+                .map_err(|e| AppError::Database(format!("Query transfer purge failed: {}", e)))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| AppError::Database(format!("Collect transfer purge failed: {}", e)))?
+        };
+
+        for id in &ids {
+            tx.execute(
+                "DELETE FROM chunks WHERE file_id IN (SELECT id FROM transfer_files WHERE transfer_id = ?1)",
+                params![id],
+            )
+            .map_err(|e| AppError::Database(format!("Purge transfer chunks failed: {}", e)))?;
+            tx.execute(
+                "DELETE FROM transfer_files WHERE transfer_id = ?1",
+                params![id],
+            )
+            .map_err(|e| AppError::Database(format!("Purge transfer files failed: {}", e)))?;
+            tx.execute(
+                "DELETE FROM transfer_events WHERE transfer_id = ?1",
+                params![id],
+            )
+            .map_err(|e| AppError::Database(format!("Purge transfer events failed: {}", e)))?;
+            tx.execute(
+                "DELETE FROM download_sessions WHERE transfer_id = ?1",
+                params![id],
+            )
+            .map_err(|e| AppError::Database(format!("Purge download sessions failed: {}", e)))?;
+            tx.execute(
+                "DELETE FROM relay_files WHERE transfer_id = ?1",
+                params![id],
+            )
+            .map_err(|e| AppError::Database(format!("Purge relay files failed: {}", e)))?;
+            tx.execute("DELETE FROM transfers WHERE id = ?1", params![id])
+                .map_err(|e| AppError::Database(format!("Purge transfer failed: {}", e)))?;
+        }
+
+        tx.commit()
+            .map_err(|e| AppError::Database(format!("Commit transfer purge failed: {}", e)))?;
+        Ok(ids.len())
     }
 
     pub fn complete_transfer(&self, id: &str, save_path: &str) -> AppResult<()> {
@@ -1475,6 +1677,11 @@ impl Database {
                     }
                 }
                 "theme_mode" => settings.theme_mode = value,
+                "download_speed_limit_mbps" => {
+                    if let Ok(v) = value.parse() {
+                        settings.download_speed_limit_mbps = v;
+                    }
+                }
                 _ => {}
             }
         }
@@ -1499,6 +1706,10 @@ impl Database {
             ("port", settings.port.to_string()),
             ("max_file_size", settings.max_file_size.to_string()),
             ("theme_mode", settings.theme_mode.clone()),
+            (
+                "download_speed_limit_mbps",
+                settings.download_speed_limit_mbps.to_string(),
+            ),
         ];
 
         for (key, value) in &pairs {
@@ -1921,6 +2132,27 @@ impl Database {
         Ok(())
     }
 
+    /// After a service restart every in-flight transfer is effectively
+    /// interrupted. Reset them to `paused` so the owner can resume from its
+    /// completed chunks instead of restarting from zero (cross-session
+    /// resume). Returns the number of transfers reset.
+    pub fn reset_inflight_transfers_to_paused(&self) -> AppResult<usize> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AppError::Database(format!("Lock poisoned: {}", e)))?;
+        let now = chrono_now();
+        let updated = conn
+            .execute(
+                "UPDATE transfers SET status = 'paused', paused_at = ?1
+                 WHERE status IN ('pending', 'transferring', 'accepted',
+                                  'requesting', 'waiting', 'awaiting_acceptance')",
+                params![now],
+            )
+            .map_err(|e| AppError::Database(format!("Reset in-flight transfers failed: {}", e)))?;
+        Ok(updated)
+    }
+
     /// Resume a paused transfer. The status is only advanced to
     /// `'transferring'` when the transfer is currently `'paused'` (guarded in
     /// the SQL `WHERE` clause) so that resuming a transfer in any other state
@@ -1945,7 +2177,8 @@ impl Database {
 }
 
 fn chrono_now() -> String {
-    // Simple ISO-8601 timestamp without chrono dependency
+    // Stored as unix-seconds text so timestamps stay sortable and compact.
+    // The frontend converts them to ISO-8601 for display (timestamp_to_iso).
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2192,8 +2425,110 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_registration_reuses_one_stable_device() {
+    fn restart_resets_inflight_transfers_to_paused() {
+        let db = Database::open(&test_db_path("restart-reset")).unwrap();
+        let transfer = |id: &str, status: &str| TransferRecord {
+            id: id.to_string(),
+            device_id: "desktop".to_string(),
+            direction: "receive".to_string(),
+            status: status.to_string(),
+            total_bytes: 100,
+            transferred_bytes: 40,
+            file_count: 1,
+            save_path: None,
+            created_at: "1".to_string(),
+            completed_at: None,
+            target_device_id: None,
+            relay_stage: None,
+            accepted_at: None,
+            expires_at: None,
+            paused_at: None,
+        };
+        db.insert_transfer(&transfer("in-flight", "transferring"))
+            .unwrap();
+        db.insert_transfer(&transfer("waiting", "accepted"))
+            .unwrap();
+        db.insert_transfer(&transfer("done", "completed")).unwrap();
+        db.insert_transfer(&transfer("canceled", "cancelled"))
+            .unwrap();
+
+        let updated = db.reset_inflight_transfers_to_paused().unwrap();
+        assert_eq!(updated, 2);
+        assert_eq!(
+            db.get_transfer("in-flight").unwrap().unwrap().status,
+            "paused"
+        );
+        assert_eq!(
+            db.get_transfer("waiting").unwrap().unwrap().status,
+            "paused"
+        );
+        assert_eq!(
+            db.get_transfer("done").unwrap().unwrap().status,
+            "completed"
+        );
+        assert_eq!(
+            db.get_transfer("canceled").unwrap().unwrap().status,
+            "cancelled"
+        );
+    }
+
+    #[test]
+    fn unproven_client_id_never_inherits_approval_or_session() {
+        let db = Database::open(&test_db_path("unproven-client")).unwrap();
+        let mut victim = device("victim", true, true, "1");
+        victim.client_id = "victim-client".to_string();
+        victim.session_token = "victim-session".to_string();
+        db.insert_device(&victim).unwrap();
+
+        // A LAN peer that only copies the client_id receives a fresh
+        // unapproved shadow record and can never obtain the victim's session
+        // token or approval.
+        let mut impersonator = device("impersonator", false, false, "2");
+        impersonator.client_id = "victim-client".to_string();
+        let (shadow, created) = db.register_or_refresh_device(&impersonator, None).unwrap();
+        assert!(created);
+        assert!(!shadow.approved);
+        assert!(!shadow.trusted);
+        assert_ne!(shadow.id, "victim");
+        assert_ne!(shadow.session_token, "victim-session");
+        assert_eq!(shadow.client_id, "");
+
+        // The original approved record is untouched.
+        let stored = db.get_device_by_id("victim").unwrap().unwrap();
+        assert!(stored.approved);
+        assert!(stored.trusted);
+        assert_eq!(stored.session_token, "victim-session");
+    }
+
+    #[test]
+    fn proven_session_token_reuses_the_existing_approved_device() {
+        let db = Database::open(&test_db_path("proven-session")).unwrap();
+        let mut stored_device = device("phone", true, true, "1");
+        stored_device.client_id = "stable-client".to_string();
+        stored_device.session_token = "session-token".to_string();
+        db.insert_device(&stored_device).unwrap();
+
+        let mut refresh = device("phone", false, false, "5");
+        refresh.client_id = "stable-client".to_string();
+        refresh.session_token = "session-token".to_string();
+        let (record, created) = db
+            .register_or_refresh_device(&refresh, Some("session-token"))
+            .unwrap();
+        assert!(!created);
+        assert_eq!(record.id, "phone");
+        assert!(record.approved);
+        assert!(record.trusted);
+        assert_eq!(record.session_token, "session-token");
+    }
+
+    #[test]
+    fn concurrent_unproven_registrations_never_touch_the_original_device() {
         let db = std::sync::Arc::new(Database::open(&test_db_path("concurrent-register")).unwrap());
+        let mut victim = device("victim", true, true, "1");
+        victim.client_id = "one-stable-client".to_string();
+        victim.session_token = "victim-session".to_string();
+        db.insert_device(&victim).unwrap();
+
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
         let handles: Vec<_> = ["first", "second"]
             .into_iter()
@@ -2204,7 +2539,7 @@ mod tests {
                     let mut candidate = device(id, false, false, "1");
                     candidate.client_id = "one-stable-client".to_string();
                     barrier.wait();
-                    db.register_or_refresh_device(&candidate).unwrap().0
+                    db.register_or_refresh_device(&candidate, None).unwrap().0
                 })
             })
             .collect();
@@ -2214,14 +2549,14 @@ mod tests {
             .into_iter()
             .map(|handle| handle.join().unwrap())
             .collect();
-        assert_eq!(registered[0].id, registered[1].id);
-        assert_eq!(
-            db.list_devices()
-                .unwrap()
-                .into_iter()
-                .filter(|entry| entry.client_id == "one-stable-client")
-                .count(),
-            1
-        );
+        for record in &registered {
+            assert!(!record.approved);
+            assert!(!record.trusted);
+            assert_ne!(record.id, "victim");
+            assert_eq!(record.client_id, "");
+            assert_ne!(record.session_token, "victim-session");
+        }
+        // The original approved record survives untouched.
+        assert!(db.get_device_by_id("victim").unwrap().unwrap().approved);
     }
 }

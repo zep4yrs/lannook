@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, onUnmounted } from "vue";
 import { DownloadCloud, FileText, Clock } from "lucide-vue-next";
+import { useLocale } from "@/i18n";
 
 export interface ReceiveTransferInfo {
   id: string;
@@ -10,6 +11,7 @@ export interface ReceiveTransferInfo {
   expiresAt?: string;
 }
 
+const { t } = useLocale();
 const props = defineProps<{
   visible: boolean;
   transfer: ReceiveTransferInfo | null;
@@ -109,15 +111,15 @@ function handleReject() {
             <DownloadCloud :size="24" />
           </div>
           <h2 class="dialog-title">
-            {{ transfer.sourceDeviceName }} 想向你发送 {{ fileCount }} 个文件
+            {{ t("receive.incomingRequest", { name: transfer.sourceDeviceName, count: fileCount }) }}
           </h2>
         </div>
 
         <!-- Expired State -->
         <div v-if="isExpired" class="expired-state">
           <Clock :size="20" />
-          <span class="expired-text">请求已失效</span>
-          <button class="reject-btn" @click="handleReject">关闭</button>
+          <span class="expired-text">{{ t("receive.expired") }}</span>
+          <button class="reject-btn" @click="handleReject">{{ t("receive.close") }}</button>
         </div>
 
         <!-- Normal State -->
@@ -137,17 +139,17 @@ function handleReject() {
 
           <!-- Total -->
           <div class="total-row">
-            <span class="total-label">总计</span>
+            <span class="total-label">{{ t("receive.total") }}</span>
             <span class="total-value">{{ formattedTotal }}</span>
           </div>
 
           <!-- Actions -->
           <div class="dialog-actions">
             <button class="accept-btn" @click="handleAccept">
-              接受并下载
+              {{ t("receive.accept") }}
             </button>
             <button class="reject-btn" @click="handleReject">
-              拒绝
+              {{ t("receive.reject") }}
             </button>
           </div>
         </template>

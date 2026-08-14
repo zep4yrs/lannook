@@ -3,12 +3,14 @@
 // 列：文件图标/名 | 进度(条+%) | 速度 | 剩余 | 大小 | 展开箭头
 import { computed } from "vue";
 import { ChevronDown, Pause, Play, X, RotateCcw } from "lucide-vue-next";
+import { useLocale } from "@/i18n";
 import type { TransferTask } from "@/types";
 import { formatBytes, formatSpeed, formatRemaining } from "@/utils/format";
 import StatusBadge from "@/components/common/StatusBadge.vue";
 import TransferExpandedDetail from "./TransferExpandedDetail.vue";
 import FileIcon from "@/components/files/FileIcon.vue";
 
+const { t } = useLocale();
 const props = defineProps<{
   task: TransferTask;
   expanded?: boolean;
@@ -106,8 +108,8 @@ const canRetry = computed(() => props.task.status === "failed");
         v-if="canPause"
         class="icon-btn"
         style="width: 26px; height: 26px"
-        title="暂停"
-        aria-label="暂停"
+        :title="t('transfers.pause')"
+        :aria-label="t('transfers.pause')"
         @click.stop="emit('pause')"
       >
         <Pause :size="14" :stroke-width="2.5" />
@@ -116,8 +118,8 @@ const canRetry = computed(() => props.task.status === "failed");
         v-if="canResume"
         class="icon-btn"
         style="width: 26px; height: 26px"
-        title="继续"
-        aria-label="继续"
+        :title="t('transfers.resume')"
+        :aria-label="t('transfers.resume')"
         @click.stop="emit('resume')"
       >
         <Play :size="14" :stroke-width="2.5" />
@@ -126,8 +128,8 @@ const canRetry = computed(() => props.task.status === "failed");
         v-if="canRetry"
         class="icon-btn"
         style="width: 26px; height: 26px"
-        title="重试"
-        aria-label="重试"
+        :title="t('transfers.retry')"
+        :aria-label="t('transfers.retry')"
         @click.stop="emit('retry')"
       >
         <RotateCcw :size="14" :stroke-width="2.5" />
@@ -136,8 +138,8 @@ const canRetry = computed(() => props.task.status === "failed");
         v-if="canCancel"
         class="icon-btn cancel-btn"
         style="width: 26px; height: 26px"
-        title="取消"
-        aria-label="取消"
+        :title="t('transfers.cancel')"
+        :aria-label="t('transfers.cancel')"
         @click.stop="emit('cancel')"
       >
         <X :size="14" :stroke-width="2.5" />

@@ -40,10 +40,38 @@ pub fn run() {
         .with_writer(non_blocking)
         .init();
 
-    // Open database in app data directory
+    // Open database in app data directory. A failure here (corrupt file,
+    // missing permissions, disk error) aborts startup with the concrete path
+    // and reason in the log instead of a bare panic.
     let db_path = get_db_path();
-    let db = Database::open(&db_path).expect("Failed to open database");
+    let db = match Database::open(&db_path) {
+        Ok(db) => db,
+        Err(error) => {
+            tracing::error!(
+                "Failed to open database at {}: {}",
+                db_path.display(),
+                error
+            );
+            panic!(
+                "Failed to open database at {}: {}",
+                db_path.display(),
+                error
+            );
+        }
+    };
     let db = Arc::new(db);
+
+    // Opportunistically purge transfer history older than 30 days so the
+    // database does not grow without bound. Files on disk are untouched.
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(i64::MAX);
+        if let Err(error) = db.purge_old_transfers(now - 30 * 24 * 3600) {
+            tracing::warn!("Failed to purge old transfer history: {}", error);
+        }
+    }
 
     // Create shared application state
     let state: SharedState = Arc::new(Mutex::new(server::AppState::new(db)));
@@ -191,6 +219,7 @@ pub fn run() {
             commands::server_cmd::get_local_service_status,
             commands::server_cmd::refresh_local_ip,
             commands::server_cmd::regenerate_connection_token,
+            commands::server_cmd::refresh_pairing_pin,
             commands::server_cmd::get_connection_info,
             commands::server_cmd::get_connection_diagnostics,
             commands::server_cmd::get_connection_qr_code,

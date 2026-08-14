@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { Check, MonitorSmartphone, ShieldCheck, X } from "lucide-vue-next";
+import { useLocale } from "@/i18n";
 import type { Device } from "@/types";
 
 const props = defineProps<{
@@ -13,6 +14,7 @@ const emit = defineEmits<{
   reject: [deviceId: string];
 }>();
 
+const { t } = useLocale();
 const trustDevice = ref(false);
 const expiryHours = ref<number | undefined>(undefined);
 
@@ -31,16 +33,17 @@ const platformLabel = computed(() => {
     ios: "iPhone / iPad",
     windows: "Windows",
     macos: "macOS",
-    web: "网页设备",
+    web: "web",
   };
-  return labels[platform ?? ""] ?? "未知平台";
+  const known = labels[platform ?? ""];
+  return known && known !== "web" ? known : t("device.platformWeb");
 });
 
 const expiryOptions = [
-  { value: undefined, label: "直到服务关闭" },
-  { value: 1, label: "1 小时" },
-  { value: 24, label: "24 小时" },
-  { value: 24 * 7, label: "7 天" },
+  { value: undefined, labelKey: "device.untilServiceStops" },
+  { value: 1, labelKey: "device.expiryHour", labelCount: 1 },
+  { value: 24, labelKey: "device.expiryHour", labelCount: 24 },
+  { value: 24 * 7, labelKey: "device.expiryDay", labelCount: 7 },
 ];
 
 function allow() {
@@ -65,32 +68,32 @@ function reject() {
         <div class="access-request__icon" aria-hidden="true">
           <MonitorSmartphone :size="25" />
         </div>
-        <h2 id="device-access-title">允许新设备接入？</h2>
+        <h2 id="device-access-title">{{ t("device.allowTitle") }}</h2>
         <p class="access-request__description">
-          <strong>{{ device.name }}</strong> 正在请求加入当前局域网。
+          <strong>{{ device.name }}</strong> {{ t("device.allowDescription", { name: device.name }) }}
         </p>
 
         <dl class="device-details">
           <div>
-            <dt>设备</dt>
+            <dt>{{ t("device.label") }}</dt>
             <dd>{{ platformLabel }}</dd>
           </div>
           <div>
-            <dt>IP 地址</dt>
-            <dd>{{ device.ip || "未获取" }}</dd>
+            <dt>{{ t("device.ipLabel") }}</dt>
+            <dd>{{ device.ip || t("device.noIp") }}</dd>
           </div>
         </dl>
 
         <label class="trust-option">
           <input v-model="trustDevice" :disabled="pending" type="checkbox" />
           <span>
-            <span class="trust-option__title"><ShieldCheck :size="16" /> 信任此设备</span>
-            <span class="trust-option__hint">以后连接时自动允许，可随时在设备页撤销。</span>
+            <span class="trust-option__title"><ShieldCheck :size="16" /> {{ t("device.trustTitle") }}</span>
+            <span class="trust-option__hint">{{ t("device.trustHint") }}</span>
           </span>
         </label>
 
         <div v-if="!trustDevice" class="expiry-option">
-          <span class="trust-option__title">授权时长</span>
+          <span class="trust-option__title">{{ t("device.expiryTitle") }}</span>
           <div class="expiry-options">
             <button
               v-for="option in expiryOptions"
@@ -101,24 +104,20 @@ function reject() {
               :disabled="pending"
               @click="expiryHours = option.value"
             >
-              {{ option.label }}
+              {{ t(option.labelKey, { count: option.labelCount ?? 1 }) }}
             </button>
           </div>
-          <span class="trust-option__hint">
-            时长结束后，该设备需要重新获得批准；"直到服务关闭"在应用退出后失效。
-          </span>
+          <span class="trust-option__hint">{{ t("device.expiryHint1") }}</span>
         </div>
 
-        <p class="access-request__notice">
-          未勾选"信任此设备"时，授权在所选时长后过期；设备断开后，将再次请求确认。
-        </p>
+        <p class="access-request__notice">{{ t("device.expiryHint2") }}</p>
 
         <div class="access-request__actions">
           <button class="reject-button" type="button" :disabled="pending" @click="reject">
-            <X :size="16" /> 拒绝
+            <X :size="16" /> {{ t("device.reject") }}
           </button>
           <button class="allow-button" type="button" :disabled="pending" @click="allow">
-            <Check :size="16" /> {{ pending ? "正在处理…" : "允许接入" }}
+            <Check :size="16" /> {{ pending ? t("device.allowPending") : t("device.allow") }}
           </button>
         </div>
       </section>

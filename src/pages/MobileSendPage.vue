@@ -61,6 +61,8 @@ interface SelectedFile {
   size: number;
   type: string;
   file: File;
+  /** Blob URL preview for image files; revoked on removal/unmount. */
+  previewUrl?: string;
 }
 
 const selectedFiles = ref<SelectedFile[]>([]);
@@ -78,12 +80,12 @@ const isTargetPhone = computed(() => {
 });
 
 const successTitle = computed(() =>
-  isRelay.value ? "已上传，等待目标设备接收" : "发送完成"
+  isRelay.value ? t("mobile.sendSuccessRelay") : t("mobile.sendSuccess")
 );
 const successHint = computed(() =>
   isRelay.value
-    ? "文件已安全保存到电脑，目标设备确认接收后才会完成。"
-    : "文件已保存到电脑。"
+    ? t("mobile.sendSuccessRelayDescription")
+    : t("mobile.sendSuccessDescription"),
 );
 
 async function loadAvailableDevices(token: string) {
@@ -121,6 +123,9 @@ watch(
 
 onBeforeUnmount(() => {
   if (deviceRefreshTimer !== null) window.clearInterval(deviceRefreshTimer);
+  for (const file of selectedFiles.value) {
+    if (file.previewUrl) URL.revokeObjectURL(file.previewUrl);
+  }
 });
 
 function triggerFileInput() {
@@ -142,6 +147,9 @@ function onFileSelected(event: Event) {
     size: file.size,
     type: getFileType(file.name),
     file,
+    // Blob preview for images so the phone shows a real thumbnail, not just
+    // a generic icon.
+    previewUrl: getFileType(file.name) === "image" ? URL.createObjectURL(file) : undefined,
   }));
 
   selectedFiles.value = [...selectedFiles.value, ...newFiles];
@@ -153,7 +161,7 @@ function onFileSelected(event: Event) {
   }
   sizeWarning.value =
     rejected.length > 0
-      ? `已跳过 ${rejected.length} 个超过大小限制的文件`
+      ? t("mobile.skippedOversized", { count: rejected.length })
       : "";
   // Reset input so same file can be selected again
   input.value = "";
@@ -164,6 +172,13 @@ function getFileType(name: string): string {
   if (/\.(png|jpg|jpeg|gif|svg|webp|heic)$/i.test(name)) return "image";
   if (/\.(zip|rar|7z|tar|gz)$/i.test(name)) return "archive";
   return "file";
+}
+
+function dropPreview(file: SelectedFile) {
+  if (file.previewUrl) {
+    URL.revokeObjectURL(file.previewUrl);
+    file.previewUrl = undefined;
+  }
 }
 
 function formatBytes(bytes: number): string {
@@ -228,6 +243,8 @@ function getFileColor(type: string): string {
 }
 
 function removeFile(id: string) {
+  const removed = selectedFiles.value.find((f) => f.id === id);
+  if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
   selectedFiles.value = selectedFiles.value.filter((f) => f.id !== id);
 }
 
@@ -237,7 +254,7 @@ function handleDeviceSelect(deviceId: string) {
 
 function getDeviceMeta(): string {
   const d = selectedDevice.value;
-  if (!d) return "选择目标设备";
+  if (!d) return t("mobile.selectTarget");
   const platformMap: Record<string, string> = {
     macos: "macOS",
     ios: "iOS",
@@ -246,7 +263,7 @@ function getDeviceMeta(): string {
     web: "Web",
   };
   const platform = platformMap[d.platform] || d.platform;
-  const status = d.online ? "在线" : "离线";
+  const status = d.online ? t("mobile.online") : t("mobile.offline");
   return `${platform} · ${status}`;
 }
 
@@ -254,11 +271,11 @@ async function handleSend() {
   const token = sessionToken.value;
   if (isUploading.value || selectedFiles.value.length === 0) return;
   if (!token || !isApproved.value) {
-    uploadError.value = "请等待电脑授权后再发送文件。";
+    uploadError.value = t("mobile.waitForApprovalBeforeSend");
     return;
   }
   if (selectedDevice.value && !selectedDevice.value.online) {
-    uploadError.value = "目标设备当前不在线，请选择在线设备或直接发送到电脑。";
+    uploadError.value = t("mobile.targetOffline");
     return;
   }
 
@@ -273,7 +290,7 @@ async function handleSend() {
     // If target is another phone, use relay through the host
     if (isTargetPhone.value && selectedDevice.value) {
       isRelay.value = true;
-      relayStatus.value = "正在上传到主机...";
+      relayStatus.value = t("mobile.uploadingToHost");
 
       const res = await createRelay(
         selectedFiles.value.map((f) => ({
@@ -292,7 +309,7 @@ async function handleSend() {
 
       transferId.value = res.id || res.transferId || null;
       if (!transferId.value) {
-        throw new Error("服务器未返回传输 ID");
+        throw new Error(t("mobile.missingTransferId"));
       }
 
       // Upload files to host (relay stage 1)
@@ -313,7 +330,7 @@ async function handleSend() {
       }
       await uploader.complete(transferId.value);
 
-      relayStatus.value = "文件已上传到电脑，正在等待目标设备确认接收。";
+      relayStatus.value = t("mobile.uploadedWaitingTarget");
       selectedFiles.value = [];
       uploadComplete.value = true;
       return;
@@ -335,7 +352,7 @@ async function handleSend() {
 
     transferId.value = res.id || res.transferId || null;
     if (!transferId.value) {
-      throw new Error("服务器未返回传输 ID");
+      throw new Error(t("mobile.missingTransferId"));
     }
 
     // Create uploader and upload files sequentially
@@ -359,7 +376,7 @@ async function handleSend() {
     selectedFiles.value = [];
     uploadComplete.value = true;
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "上传失败";
+    const msg = err instanceof Error ? err.message : t("mobile.uploadFailed");
     if (msg !== "cancelled") {
       uploadError.value = msg;
     }
@@ -392,20 +409,20 @@ async function handleCancel() {
   <div class="mobile-send-page">
     <!-- Title Section -->
     <section class="title-section">
-      <h1 class="page-title">发送文件</h1>
+      <h1 class="page-title">{{ t("mobile.sendTitle") }}</h1>
       <p class="page-subtitle">{{ t("mobile.sendSubtitle") }}</p>
     </section>
 
     <!-- Device Selector -->
     <section class="section">
-      <span class="section-label">发送给</span>
+      <span class="section-label">{{ t("mobile.sendTo") }}</span>
       <button class="device-card" :disabled="!isApproved" @click="showDeviceSheet = true">
         <div class="device-card-icon">
           <Monitor :size="20" />
         </div>
         <div class="device-card-info">
           <span class="device-card-name">
-            {{ selectedDevice?.name || "选择设备" }}
+            {{ selectedDevice?.name || t("mobile.selectDevice") }}
           </span>
           <span class="device-card-meta">{{ getDeviceMeta() }}</span>
         </div>
@@ -433,9 +450,9 @@ async function handleCancel() {
         <div class="upload-icon-circle">
           <UploadCloud :size="24" />
         </div>
-        <span class="drop-title">选择照片、视频或文件</span>
-        <span class="drop-hint">支持多文件选择</span>
-        <button class="select-file-btn" @click="triggerFileInput">选择文件</button>
+        <span class="drop-title">{{ t("mobile.pickFiles") }}</span>
+        <span class="drop-hint">{{ t("mobile.pickFilesHint") }}</span>
+        <button class="select-file-btn" @click="triggerFileInput">{{ t("mobile.chooseFiles") }}</button>
       </div>
       <p v-if="sizeWarning" class="warning-msg">{{ sizeWarning }}</p>
       <p v-if="uploadError" class="error-msg">{{ uploadError }}</p>
@@ -444,8 +461,8 @@ async function handleCancel() {
     <!-- Selected Files List -->
     <section v-if="selectedFiles.length > 0" class="section">
       <div class="files-header">
-        <span class="files-count">已选择 {{ selectedFiles.length }} 个文件</span>
-        <span class="files-total">共 {{ totalSizeLabel }}</span>
+        <span class="files-count">{{ t("mobile.selectedCount", { count: selectedFiles.length }) }}</span>
+        <span class="files-total">{{ t("mobile.totalFiles", { label: totalSizeLabel }) }}</span>
       </div>
       <div class="files-list">
         <div
@@ -457,7 +474,14 @@ async function handleCancel() {
             class="file-icon-square"
             :style="{ color: getFileColor(file.type), background: `color-mix(in srgb, ${getFileColor(file.type)} 12%, transparent)` }"
           >
-            <component :is="getFileIcon(file.type)" :size="16" />
+            <img
+              v-if="file.previewUrl"
+              :src="file.previewUrl"
+              class="file-thumb"
+              alt=""
+              @error="dropPreview(file)"
+            />
+            <component v-else :is="getFileIcon(file.type)" :size="16" />
           </div>
           <div class="file-info">
             <span class="file-name">{{ file.name }}</span>
@@ -495,8 +519,8 @@ async function handleCancel() {
           <span>{{ Math.round(uploadProgress.progress) }}%</span>
           <span>{{ formatBytes(uploadProgress.transferredBytes) }} / {{ formatBytes(uploadProgress.totalBytes) }}</span>
           <span v-if="uploadProgress.status !== 'retrying'">{{ formatSpeed(uploadProgress.speedBytesPerSecond) }}</span>
-          <span v-if="uploadProgress.status !== 'retrying'">已用 {{ formatElapsed(uploadProgress.elapsedSeconds) }}</span>
-          <span v-if="uploadProgress.status !== 'retrying'">剩余 {{ formatRemaining(uploadProgress.remainingSeconds) }}</span>
+          <span v-if="uploadProgress.status !== 'retrying'">{{ t("mobile.elapsedStat") }} {{ formatElapsed(uploadProgress.elapsedSeconds) }}</span>
+          <span v-if="uploadProgress.status !== 'retrying'">{{ t("mobile.remainingStat") }} {{ formatRemaining(uploadProgress.remainingSeconds) }}</span>
         </div>
       </div>
     </section>
@@ -525,7 +549,7 @@ async function handleCancel() {
         class="send-btn send-btn--cancel"
         @click="handleCancel"
       >
-        取消传输
+        {{ t("transfers.cancel") }}
       </button>
       <button
         v-else
@@ -533,7 +557,7 @@ async function handleCancel() {
         :disabled="selectedFiles.length === 0 || !sessionToken || !isApproved"
         @click="handleSend"
       >
-        {{ isTargetPhone ? "中转发送" : "发送" }} {{ selectedFiles.length }} 个文件
+        {{ (isTargetPhone ? t("mobile.relaySend") : t("mobile.send")) }} {{ t("mobile.sendCount", { count: selectedFiles.length }) }}
       </button>
     </div>
 
@@ -549,6 +573,12 @@ async function handleCancel() {
 </template>
 
 <style scoped>
+.file-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+}
 .mobile-send-page {
   max-width: 375px;
   margin: 0 auto;

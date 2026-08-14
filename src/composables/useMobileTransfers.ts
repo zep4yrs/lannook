@@ -6,6 +6,7 @@ import {
   resumeTransferApi,
 } from "@/services/api";
 import { wsClient, type WsMessage } from "@/services/websocket";
+import { useLocale } from "@/i18n";
 import type { TransferTask } from "@/types";
 
 interface MobileTransfersOptions {
@@ -19,6 +20,7 @@ interface MobileTransfersOptions {
  * Pinia state or Tauri commands.
  */
 export function useMobileTransfers({ sessionToken, isApproved }: MobileTransfersOptions) {
+  const { t } = useLocale();
   const transfers = ref<TransferTask[]>([]);
   const loading = ref(false);
   const error = ref<string | null>(null);
@@ -56,7 +58,7 @@ export function useMobileTransfers({ sessionToken, isApproved }: MobileTransfers
     if (transfer.status !== "paused") transfer.status = "transferring";
   }
 
-  function applyTerminalStatus(status: "completed" | "cancelled") {
+  function applyTerminalStatus(status: "completed" | "cancelled" | "failed") {
     return (message: WsMessage) => {
       const transferId = message.payload?.transferId;
       if (typeof transferId !== "string") return;
@@ -77,6 +79,7 @@ export function useMobileTransfers({ sessionToken, isApproved }: MobileTransfers
 
   const onTransferCompleted = applyTerminalStatus("completed");
   const onTransferCancelled = applyTerminalStatus("cancelled");
+  const onTransferFailed = applyTerminalStatus("failed");
   const onSocketConnected = () => void refresh();
 
   function bindSocketListeners() {
@@ -85,6 +88,7 @@ export function useMobileTransfers({ sessionToken, isApproved }: MobileTransfers
     wsClient.on("transfer.created", onSocketConnected);
     wsClient.on("transfer.completed", onTransferCompleted);
     wsClient.on("transfer.cancelled", onTransferCancelled);
+    wsClient.on("transfer.failed", onTransferFailed);
     wsClient.on("connected", onSocketConnected);
   }
 
@@ -94,6 +98,7 @@ export function useMobileTransfers({ sessionToken, isApproved }: MobileTransfers
     wsClient.off("transfer.created", onSocketConnected);
     wsClient.off("transfer.completed", onTransferCompleted);
     wsClient.off("transfer.cancelled", onTransferCancelled);
+    wsClient.off("transfer.failed", onTransferFailed);
     wsClient.off("connected", onSocketConnected);
   }
 
@@ -140,7 +145,7 @@ export function useMobileTransfers({ sessionToken, isApproved }: MobileTransfers
       });
       error.value = null;
     } catch (reason) {
-      error.value = reason instanceof Error ? reason.message : "无法加载传输状态。";
+      error.value = reason instanceof Error ? reason.message : t("mobile.loadStatusFailed");
     } finally {
       loading.value = false;
     }
@@ -149,14 +154,14 @@ export function useMobileTransfers({ sessionToken, isApproved }: MobileTransfers
   async function runAction(action: (token: string) => Promise<unknown>) {
     const token = sessionToken.value;
     if (!token || !isApproved.value) {
-      error.value = "设备尚未获得授权。";
+      error.value = t("mobile.notAuthorized");
       return;
     }
     try {
       await action(token);
       await refresh();
     } catch (reason) {
-      error.value = reason instanceof Error ? reason.message : "传输操作失败。";
+      error.value = reason instanceof Error ? reason.message : t("mobile.transferOperationFailed");
     }
   }
 

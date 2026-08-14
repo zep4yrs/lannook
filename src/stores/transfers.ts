@@ -13,6 +13,7 @@ import {
 import type { SendTransferResult } from "@/services/tauri";
 import { wsClient } from "@/services/websocket";
 import { genId } from "@/utils/format";
+import { useLocale } from "@/i18n";
 
 // A file queued for sending (from drag & drop or the file picker)
 export interface PendingTransferFile {
@@ -23,6 +24,7 @@ export interface PendingTransferFile {
 }
 
 export const useTransfersStore = defineStore("transfers", () => {
+  const { t } = useLocale();
   const transfers = ref<TransferTask[]>([]);
 
   // Files queued by the user (drag & drop / picker) waiting to be sent
@@ -117,7 +119,7 @@ export const useTransfersStore = defineStore("transfers", () => {
     if (isTauri()) {
       try {
         const result = await tauriCancelTransfer(id);
-        if (!result.success) throw new Error(result.error ?? "取消传输失败");
+        if (!result.success) throw new Error(result.error ?? t("app.cancelTransferFailed"));
       } catch (err) {
         console.error("[transfers] Failed to cancel transfer:", err);
         return;
@@ -135,7 +137,7 @@ export const useTransfersStore = defineStore("transfers", () => {
     if (isTauri()) {
       try {
         const result = await pauseTransferCmd(id);
-        if (!result.success) throw new Error(result.error ?? "暂停传输失败");
+        if (!result.success) throw new Error(result.error ?? t("app.pauseTransferFailed"));
       } catch (err) {
         console.error("[transfers] Failed to pause transfer:", err);
         return;
@@ -153,7 +155,7 @@ export const useTransfersStore = defineStore("transfers", () => {
     if (isTauri()) {
       try {
         const result = await resumeTransferCmd(id);
-        if (!result.success) throw new Error(result.error ?? "恢复传输失败");
+        if (!result.success) throw new Error(result.error ?? t("app.resumeTransferFailed"));
       } catch (err) {
         console.error("[transfers] Failed to resume transfer:", err);
         return;
@@ -184,7 +186,7 @@ export const useTransfersStore = defineStore("transfers", () => {
     if (isTauri()) {
       try {
         const result = await resumeTransferCmd(id);
-        if (!result.success) throw new Error(result.error ?? "重试传输失败");
+        if (!result.success) throw new Error(result.error ?? t("app.retryTransferFailed"));
       } catch (err) {
         console.error("[transfers] retry failed:", err);
         task.status = "failed";
@@ -201,12 +203,12 @@ export const useTransfersStore = defineStore("transfers", () => {
     targetDeviceId: string
   ): Promise<SendTransferResult> {
     if (!isTauri()) {
-      throw new Error("请使用桌面应用发送本机文件。");
+      throw new Error(t("app.desktopOnlySend"));
     }
     try {
       const result = await sendFilesToDevice(filePaths, targetDeviceId);
       if (!result.success) {
-        throw new Error(result.error ?? "未能创建发送请求。");
+        throw new Error(result.error ?? t("app.createSendFailed"));
       }
       return result;
     } catch (err) {

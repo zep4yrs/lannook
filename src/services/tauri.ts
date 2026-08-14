@@ -22,6 +22,7 @@ export interface ConnectionInfo {
   receiveFolder: string;
   deviceName: string;
   addresses: ConnectionAddress[];
+  pin: string | null;
 }
 
 export interface ConnectionAddress {
@@ -113,6 +114,10 @@ export async function refreshLocalIp(): Promise<string> {
 
 export async function regenerateConnectionToken(): Promise<string> {
   return invoke("regenerate_connection_token");
+}
+
+export async function refreshPairingPin(): Promise<string> {
+  return invoke("refresh_pairing_pin");
 }
 
 export async function getConnectionInfo(): Promise<ConnectionInfo> {
@@ -247,7 +252,7 @@ export async function pickFiles(): Promise<PickedFile[]> {
   const result = await open({
     multiple: true,
     directory: false,
-    title: "选择要发送的文件",
+    title: "Select files to send",
   });
   const filePaths = Array.isArray(result) ? result : result ? [result] : [];
   if (filePaths.length === 0) return [];
@@ -260,7 +265,7 @@ export async function pickDirectory(): Promise<string | null> {
   const result = await open({
     multiple: false,
     directory: true,
-    title: "选择接收文件夹",
+    title: "Select receive folder",
   });
   return typeof result === "string" ? result : null;
 }

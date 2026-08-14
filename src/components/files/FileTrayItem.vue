@@ -1,12 +1,14 @@
 <script setup lang="ts">
 // 桌面端待发送文件托盘项（名称 + 大小 + 移除 + 预览）
 import { X, Eye } from "lucide-vue-next";
+import { useLocale } from "@/i18n";
 import FileIcon from "./FileIcon.vue";
 import type { TransferFile } from "@/types";
 import { formatBytes } from "@/utils/format";
 
 defineProps<{ file: TransferFile }>();
 const emit = defineEmits<{ remove: []; preview: [] }>();
+const { t } = useLocale();
 </script>
 
 <template>
@@ -22,8 +24,8 @@ const emit = defineEmits<{ remove: []; preview: [] }>();
     <button
       class="icon-btn"
       style="width: 24px; height: 24px"
-      aria-label="移除"
-      title="移除"
+      :aria-label="t('common.remove')"
+      :title="t('common.remove')"
       @click="emit('remove')"
     >
       <X :size="14" :stroke-width="2.5" />
@@ -31,8 +33,8 @@ const emit = defineEmits<{ remove: []; preview: [] }>();
     <button
       class="icon-btn"
       style="width: 24px; height: 24px"
-      aria-label="预览"
-      title="预览"
+      :aria-label="t('common.preview')"
+      :title="t('common.preview')"
       @click="emit('preview')"
     >
       <Eye :size="14" :stroke-width="2" />

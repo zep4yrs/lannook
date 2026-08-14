@@ -2,10 +2,12 @@
 // 任务展开详情面板（设计稿 任务展开详情.html）
 // 显示：分片进度、开始时间、文件校验、重试次数、保存目录、文件大小、分片大小、传输协议
 import { computed } from "vue";
+import { useLocale } from "@/i18n";
 import type { TransferTask } from "@/types";
 import { formatBytes, formatClock } from "@/utils/format";
 import ChunkBar from "./ChunkBar.vue";
 
+const { t } = useLocale();
 const props = defineProps<{ task: TransferTask }>();
 
 const chunkTotal = computed(() => props.task.chunkTotal ?? 0);
@@ -34,34 +36,34 @@ const chunkDone = computed(() => props.task.chunkDone ?? 0);
         <!-- Left Column -->
         <div>
           <div class="flex items-center justify-between mb-2">
-            <span class="detail-label">开始时间</span>
+            <span class="detail-label">{{ t("transfers.startedAt") }}</span>
             <span class="detail-value">{{ formatClock(task.startedAt) }}</span>
           </div>
           <div class="flex items-center justify-between mb-2">
-            <span class="detail-label">文件校验</span>
+            <span class="detail-label">{{ t("transfers.checksum") }}</span>
             <span class="detail-value">SHA-256</span>
           </div>
           <div class="flex items-center justify-between">
-            <span class="detail-label">重试次数</span>
+            <span class="detail-label">{{ t("transfers.retryCountLabel") }}</span>
             <span class="detail-value">{{ task.retryCount ?? 0 }}</span>
           </div>
         </div>
         <!-- Right Column -->
         <div>
           <div class="flex items-center justify-between mb-2">
-            <span class="detail-label">保存目录</span>
+            <span class="detail-label">{{ t("transfers.saveDir") }}</span>
             <span class="detail-value" style="font-family: var(--font-sans)">{{ task.savePath || "—" }}</span>
           </div>
           <div class="flex items-center justify-between mb-2">
-            <span class="detail-label">文件大小</span>
+            <span class="detail-label">{{ t("transfers.fileSize") }}</span>
             <span class="detail-value">{{ formatBytes(task.totalBytes) }}</span>
           </div>
           <div class="flex items-center justify-between mb-2">
-            <span class="detail-label">分片大小</span>
+            <span class="detail-label">{{ t("transfers.chunkSize") }}</span>
             <span class="detail-value">{{ task.chunkSize ? formatBytes(task.chunkSize, 0) : "—" }}</span>
           </div>
           <div class="flex items-center justify-between">
-            <span class="detail-label">传输协议</span>
+            <span class="detail-label">{{ t("transfers.protocol") }}</span>
             <span class="detail-value">{{ task.protocol || "HTTP" }}</span>
           </div>
         </div>

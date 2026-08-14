@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { Sun, Moon, MonitorSmartphone, FolderOpen, ShieldCheck, FileText, Info } from "lucide-vue-next";
+import { Sun, Moon, MonitorSmartphone, FolderOpen, ShieldCheck, FileText, Gauge, Info } from "lucide-vue-next";
 import { useSettingsStore } from "@/stores/settings";
 import { useAppStore } from "@/stores/app";
 import { pickDirectory } from "@/services/tauri";
@@ -34,6 +34,11 @@ function toggleApproval() {
 
 function setAuthorizationExpiryHours(hours: number) {
   settingsStore.setAuthorizationExpiryHours(hours);
+}
+
+function onSpeedLimitChange(event: Event) {
+  const raw = Number((event.target as HTMLInputElement).value);
+  settingsStore.setDownloadSpeedLimitMbps(Number.isFinite(raw) ? raw : 0);
 }
 
 const authorizationOptions = [
@@ -188,6 +193,34 @@ async function changeFolder() {
             >
               {{ t(option.labelKey) }}
             </button>
+          </div>
+        </div>
+      </section>
+
+      <hr class="settings-divider" />
+
+      <!-- Transfer Section -->
+      <section class="settings-section">
+        <div class="section-header">
+          <Gauge :size="16" class="section-icon" />
+          <h2 class="section-title">{{ t("settings.transfer") }}</h2>
+        </div>
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <span class="toggle-label">{{ t("settings.downloadSpeedLimit") }}</span>
+            <span class="toggle-desc">{{ t("settings.downloadSpeedLimitDescription") }}</span>
+          </div>
+          <div class="speed-limit-picker">
+            <input
+              type="number"
+              min="0"
+              max="1024"
+              step="1"
+              class="speed-limit-input"
+              :value="settingsStore.downloadSpeedLimitMbps"
+              @change="onSpeedLimitChange"
+            />
+            <span class="speed-limit-unit">MiB/s</span>
           </div>
         </div>
       </section>
@@ -475,6 +508,36 @@ async function changeFolder() {
   background: white;
   box-shadow: var(--shadow-sm);
   transition: transform var(--transition-normal);
+}
+
+.speed-limit-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.speed-limit-input {
+  width: 84px;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-page);
+  color: var(--color-text-primary);
+  font: inherit;
+  text-align: right;
+}
+
+.speed-limit-input:focus {
+  outline: none;
+  border-color: var(--color-brand-primary);
+}
+
+.speed-limit-unit {
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  white-space: nowrap;
 }
 
 .toggle-switch--on .toggle-knob {

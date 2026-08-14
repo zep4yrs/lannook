@@ -12,9 +12,16 @@ use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::storage::Database;
+use handlers::SpeedTracker;
 
 /// Default server port
 pub const DEFAULT_PORT: u16 = 53317;
+
+/// Maximum simultaneous WebSocket sessions served by the LAN endpoint.
+pub const MAX_WS_CONNECTIONS: usize = 512;
+
+/// Maximum simultaneous WebSocket sessions per authenticated device.
+pub const MAX_WS_PER_DEVICE: usize = 4;
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -162,6 +169,44 @@ pub struct TransferTelemetry {
     pub remaining_seconds: Option<i64>,
 }
 
+/// A short-lived 6-digit pairing code shown on the desktop for browsers that
+/// cannot scan the QR code. Single use with a 5-minute expiry, plus a
+/// per-IP brute-force lockout after repeated failures.
+pub struct PairingPin {
+    pub code: String,
+    /// Unix seconds after which the code stops working.
+    pub expires_at: i64,
+}
+
+/// Per-IP brute-force guard for PIN pairing.
+pub struct PairingAttempt {
+    pub failures: u32,
+    /// Unix seconds until this IP is allowed to try again.
+    pub locked_until: i64,
+}
+
+/// Generate a fresh 6-digit decimal pairing code (uniform-ish via SHA-256).
+pub fn generate_pairing_code() -> String {
+    use sha2::{Digest, Sha256};
+    let material = format!(
+        "{}:{}",
+        uuid::Uuid::new_v4(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+    );
+    let digest = Sha256::digest(material.as_bytes());
+    let mut code = String::with_capacity(6);
+    for byte in digest.iter().take(4) {
+        code.push_str(&format!("{:02}", byte % 100));
+        if code.len() >= 6 {
+            break;
+        }
+    }
+    code[..6].to_string()
+}
+
 /// Service lifecycle status
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -209,8 +254,15 @@ pub struct AppState {
     /// Number of active authenticated WebSocket sessions per device. A device
     /// stays online until its last browser tab/socket disconnects.
     pub connected_devices: HashMap<String, usize>,
+    /// Total authenticated WebSocket sessions currently served. Bounded by
+    /// MAX_WS_CONNECTIONS to protect against connection-flooding.
+    pub ws_connection_count: usize,
     /// Live speed/remaining values keyed by transfer id.
     pub transfer_telemetry: HashMap<String, TransferTelemetry>,
+    /// Per-transfer moving-window speed trackers. Lives in AppState (not a
+    /// process-global) so stalled transfers are dropped with the service and
+    /// state stays inspectable.
+    pub(crate) speed_trackers: HashMap<String, SpeedTracker>,
     /// Keeps the mDNS service registered while present. Taking and dropping
     /// this guard unregisters the service from the LAN (see stop_local_service).
     pub mdns_guard: Option<crate::discovery::MdnsGuard>,
@@ -220,6 +272,10 @@ pub struct AppState {
     /// Generation currently being advertised outside the state lock. This
     /// prevents concurrent refresh commands from racing duplicate mDNS work.
     pub mdns_refresh_generation: Option<u64>,
+    /// Active pairing code (if any) shown in the desktop connect panel.
+    pub pairing_pin: Option<PairingPin>,
+    /// Per-IP brute-force guard for PIN pairing.
+    pub pairing_attempts: HashMap<String, PairingAttempt>,
 }
 
 impl AppState {
@@ -264,10 +320,14 @@ impl AppState {
             shutdown_tx: None,
             receive_folder: settings.receive_folder,
             connected_devices: HashMap::new(),
+            ws_connection_count: 0,
             transfer_telemetry: HashMap::new(),
+            speed_trackers: HashMap::new(),
             mdns_guard: None,
             network_generation: 0,
             mdns_refresh_generation: None,
+            pairing_pin: None,
+            pairing_attempts: HashMap::new(),
         }
     }
 
@@ -438,6 +498,19 @@ pub async fn start_server(state: SharedState, frontend_dir: String) -> Result<()
         }
         s.status = ServiceStatus::Starting;
         s.error = None;
+        // A restart interrupts every in-flight transfer; reset them to
+        // paused so the owner can resume from completed chunks
+        // (cross-session resume).
+        match s.db.reset_inflight_transfers_to_paused() {
+            Ok(count) if count > 0 => {
+                tracing::info!(
+                    "Reset {} in-flight transfers to paused after restart",
+                    count
+                );
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!("Failed to reset in-flight transfers: {}", error),
+        }
     }
 
     let port = {
@@ -453,6 +526,28 @@ pub async fn start_server(state: SharedState, frontend_dir: String) -> Result<()
     let frontend_root = std::path::Path::new(&frontend_dir);
     let index_html = frontend_root.join("index.html");
     let assets_dir = frontend_root.join("assets");
+    let manifest_path = frontend_root.join("manifest.webmanifest");
+    let icon_path = frontend_root.join("pwa-512.png");
+    /// Serve a whitelisted static file (PWA manifest / icon) with a fixed
+    /// content type. Paths are closed over constants, never from the URL.
+    async fn serve_embedded_file(
+        path: std::path::PathBuf,
+        mime_type: &'static str,
+    ) -> axum::response::Response {
+        match tokio::fs::read(&path).await {
+            Ok(bytes) => (
+                axum::http::StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, mime_type)],
+                bytes,
+            )
+                .into_response(),
+            Err(error) => {
+                tracing::warn!("Failed to serve PWA asset {}: {}", path.display(), error);
+                axum::http::StatusCode::NOT_FOUND.into_response()
+            }
+        }
+    }
+
     let spa_fallback = move |uri: axum::http::Uri| {
         let index_html = index_html.clone();
         async move {
@@ -465,7 +560,16 @@ pub async fn start_server(state: SharedState, frontend_dir: String) -> Result<()
             match tokio::fs::read(index_html).await {
                 Ok(contents) => (
                     axum::http::StatusCode::OK,
-                    [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                    [
+                        (
+                            axum::http::header::CONTENT_TYPE,
+                            "text/html; charset=utf-8",
+                        ),
+                        (
+                            axum::http::header::CONTENT_SECURITY_POLICY,
+                            "default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none'",
+                        ),
+                    ],
                     contents,
                 )
                     .into_response(),
@@ -481,6 +585,7 @@ pub async fn start_server(state: SharedState, frontend_dir: String) -> Result<()
     let app = axum::Router::new()
         .route("/api/status", axum::routing::get(handlers::get_status))
         .route("/api/connect", axum::routing::get(handlers::connect))
+        .route("/api/pair", axum::routing::post(handlers::pair_with_pin))
         .route(
             "/api/devices/register",
             axum::routing::post(handlers::register_device),
@@ -548,10 +653,25 @@ pub async fn start_server(state: SharedState, frontend_dir: String) -> Result<()
         )
         .route("/api/{*path}", axum::routing::any(handlers::api_not_found))
         .route("/ws", axum::routing::get(ws::ws_handler))
+        // PWA static assets (whitelisted paths only - no user input here).
+        .route(
+            "/manifest.webmanifest",
+            axum::routing::get({
+                let p = manifest_path.clone();
+                move || serve_embedded_file(p.clone(), "application/manifest+json")
+            }),
+        )
+        .route(
+            "/pwa-512.png",
+            axum::routing::get({
+                let p = icon_path.clone();
+                move || serve_embedded_file(p.clone(), "image/png")
+            }),
+        )
         .nest_service("/assets", ServeDir::new(assets_dir))
         .fallback(spa_fallback)
-        // File chunks are 4 MiB. Axum otherwise rejects bodies above 2 MiB
-        // before `upload_chunk` can process them.
+        // File chunks are 512 KiB, but Axum otherwise rejects bodies above
+        // 2 MiB before `upload_chunk` can process them.
         .layer(DefaultBodyLimit::max(
             crate::transfer::CHUNK_SIZE as usize + 1024,
         ))

@@ -4,7 +4,7 @@ use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use std::collections::HashMap;
 
-use crate::server::{SharedState, WsEvent};
+use crate::server::{SharedState, WsEvent, MAX_WS_CONNECTIONS, MAX_WS_PER_DEVICE};
 use crate::storage::DeviceRecord;
 
 fn add_device_connection(connections: &mut HashMap<String, usize>, device_id: &str) -> bool {
@@ -102,6 +102,32 @@ pub async fn ws_handler(
         }
     };
 
+    // Reject before the upgrade when the server is saturated: a flood of
+    // handshakes must never grow the broadcast fan-out without bound.
+    {
+        let mut s = state.lock().await;
+        if s.ws_connection_count >= MAX_WS_CONNECTIONS {
+            tracing::warn!("WebSocket rejected: connection limit reached");
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "Too many connections",
+            )
+                .into_response();
+        }
+        if let Some(device) = &device {
+            let sessions = s.connected_devices.get(&device.id).copied().unwrap_or(0);
+            if sessions >= MAX_WS_PER_DEVICE {
+                tracing::warn!("WebSocket rejected: device session limit reached");
+                return (
+                    axum::http::StatusCode::TOO_MANY_REQUESTS,
+                    "Too many sessions for this device",
+                )
+                    .into_response();
+            }
+        }
+        s.ws_connection_count += 1;
+    }
+
     // Subscribe before upgrading so the new socket cannot miss an event that
     // races with the handshake. Online accounting starts only after Axum has
     // actually completed the WebSocket upgrade.
@@ -141,7 +167,7 @@ async fn handle_socket(
         tokio::select! {
             event = rx.recv() => match event {
                 Ok(event) => {
-                    if !should_deliver_event(&event, device_id.as_deref()) {
+                    if !should_deliver_event(&event, device_id.as_deref(), &state).await {
                         continue;
                     }
                     let json = match serde_json::to_string(&event) {
@@ -183,7 +209,10 @@ async fn handle_socket(
                 }
             },
             _ = heartbeat.tick() => {
-                if last_activity.elapsed() > tokio::time::Duration::from_secs(60) {
+                // 120 s instead of 60 s: a phone browser may throttle timers
+                // or suspend its socket during a screen lock / Wi-Fi handoff.
+                // The client reconnects with backoff when a socket does die.
+                if last_activity.elapsed() > tokio::time::Duration::from_secs(120) {
                     tracing::warn!("WebSocket heartbeat timed out");
                     break;
                 }
@@ -194,37 +223,84 @@ async fn handle_socket(
         }
     }
 
-    if let Some(device_id) = device_id {
+    {
         let mut s = state.lock().await;
-        if remove_device_connection(&mut s.connected_devices, &device_id) {
-            // A phone browser may suspend its socket during a screen lock or
-            // Wi-Fi handoff. One-time approval remains valid for this desktop
-            // service lifetime and is reset on stop, restart, or token reset.
-            let _ = s.event_tx.send(WsEvent::DeviceDisconnected { device_id });
+        s.ws_connection_count = s.ws_connection_count.saturating_sub(1);
+        if let Some(device_id) = device_id {
+            if remove_device_connection(&mut s.connected_devices, &device_id) {
+                // A phone browser may suspend its socket during a screen lock or
+                // Wi-Fi handoff. One-time approval remains valid for this desktop
+                // service lifetime and is reset on stop, restart, or token reset.
+                let _ = s.event_tx.send(WsEvent::DeviceDisconnected { device_id });
+            }
         }
     }
 
     tracing::info!("WebSocket connection closed");
 }
 
-/// Transfer invitations must only be delivered to their selected target. Other
-/// lifecycle events remain visible to the desktop control channel.
-fn should_deliver_event(event: &WsEvent, device_id: Option<&str>) -> bool {
-    // The desktop control channel can observe lifecycle events. A mobile
-    // browser only needs an invitation explicitly addressed to its device;
-    // suppressing every other broadcast avoids leaking another device's
-    // transfer names, sizes, or progress.
-    match (event, device_id) {
-        (_, None) => true,
-        (
-            WsEvent::TransferRequested {
-                target_device_id, ..
-            },
-            Some(id),
-        ) => id == target_device_id,
-        (WsEvent::DeviceApproved { device_id, .. }, Some(id)) => id == device_id,
-        (WsEvent::DeviceRejected { device_id, .. }, Some(id)) => id == device_id,
-        _ => false,
+/// Extract the transfer id carried by a transfer-lifecycle event, if any.
+fn transfer_id_of(event: &WsEvent) -> Option<&str> {
+    match event {
+        WsEvent::TransferCreated { transfer_id, .. }
+        | WsEvent::TransferStarted { transfer_id }
+        | WsEvent::TransferProgress { transfer_id, .. }
+        | WsEvent::TransferChecksumReady { transfer_id, .. }
+        | WsEvent::TransferChecksumProgress { transfer_id, .. }
+        | WsEvent::TransferVerifying { transfer_id }
+        | WsEvent::TransferCompleted { transfer_id, .. }
+        | WsEvent::TransferCancelled { transfer_id }
+        | WsEvent::TransferFailed { transfer_id, .. }
+        | WsEvent::TransferDeleted { transfer_id }
+        | WsEvent::TransferAccepted { transfer_id }
+        | WsEvent::TransferRejected { transfer_id }
+        | WsEvent::TransferExpired { transfer_id }
+        | WsEvent::TransferPaused { transfer_id }
+        | WsEvent::TransferResumed { transfer_id }
+        | WsEvent::TransferDownloadStarted { transfer_id }
+        | WsEvent::TransferDownloadProgress { transfer_id, .. }
+        | WsEvent::TransferRelayStageChanged { transfer_id, .. } => Some(transfer_id),
+        _ => None,
+    }
+}
+
+/// Decide whether a client may receive a broadcast event. The desktop control
+/// channel (no device id) observes everything. A mobile browser only receives
+/// invitations/approvals explicitly addressed to it, plus transfer-lifecycle
+/// and progress events whose transfer belongs to it - so another device's
+/// names, sizes, or progress never leak, while the owning phone sees live
+/// completion (the "received by the other side" confirmation).
+async fn should_deliver_event(
+    event: &WsEvent,
+    device_id: Option<&str>,
+    state: &SharedState,
+) -> bool {
+    let Some(id) = device_id else {
+        return true;
+    };
+    match event {
+        WsEvent::TransferRequested {
+            target_device_id, ..
+        } => id == target_device_id,
+        WsEvent::DeviceApproved {
+            device_id: device, ..
+        } => id == device,
+        WsEvent::DeviceRejected {
+            device_id: device, ..
+        } => id == device,
+        // Remaining transfer.* events are only useful to the owning device.
+        _ => {
+            let Some(transfer_id) = transfer_id_of(event) else {
+                return false;
+            };
+            let s = state.lock().await;
+            match s.db.get_transfer(transfer_id) {
+                Ok(Some(transfer)) => {
+                    transfer.device_id == id || transfer.target_device_id.as_deref() == Some(id)
+                }
+                _ => false,
+            }
+        }
     }
 }
 

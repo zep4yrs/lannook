@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, computed, shallowRef } from "vue";
 import type { ThemeMode } from "../types";
+import { useLocale } from "@/i18n";
 import {
   isTauri,
   getSettings,
@@ -17,6 +18,7 @@ import {
 let persistedThemeMode: ThemeMode = "system";
 
 export const useSettingsStore = defineStore("settings", () => {
+  const { t } = useLocale();
   const themeMode = ref<ThemeMode>(persistedThemeMode);
   // Do not expose another user's local path before the backend returns settings.
   const receiveFolder = ref<string>("");
@@ -25,6 +27,8 @@ export const useSettingsStore = defineStore("settings", () => {
   const maxFileSize = ref<number>(0);
   // Default approval duration for new devices (0 = session-only, positive = hours).
   const authorizationExpiryHours = ref<number>(0);
+  // Download throttle in MiB/s (0 = unlimited).
+  const downloadSpeedLimitMbps = ref<number>(0);
   const autostartEnabled = ref(false);
   const closeBehavior = ref<CloseBehavior>("minimize");
 
@@ -159,6 +163,9 @@ export const useSettingsStore = defineStore("settings", () => {
         if (settings.authorizationExpiryHours !== undefined) {
           authorizationExpiryHours.value = settings.authorizationExpiryHours as number;
         }
+        if (settings.downloadSpeedLimitMbps !== undefined) {
+          downloadSpeedLimitMbps.value = settings.downloadSpeedLimitMbps as number;
+        }
         if (settings.themeMode) {
           themeMode.value = settings.themeMode as ThemeMode;
           persistedThemeMode = settings.themeMode as ThemeMode;
@@ -187,9 +194,10 @@ export const useSettingsStore = defineStore("settings", () => {
           requireApproval: requireApproval.value,
           maxFileSize: maxFileSize.value,
           authorizationExpiryHours: authorizationExpiryHours.value,
+          downloadSpeedLimitMbps: downloadSpeedLimitMbps.value,
           themeMode: themeMode.value,
         });
-        if (!result.success) throw new Error(result.error ?? "保存设置失败");
+        if (!result.success) throw new Error(result.error ?? t("app.saveSettingsFailed"));
         return true;
       } catch (err) {
         console.error("[settings] Failed to save settings:", err);
@@ -200,6 +208,11 @@ export const useSettingsStore = defineStore("settings", () => {
     return true;
   }
 
+  function setDownloadSpeedLimitMbps(value: number) {
+    downloadSpeedLimitMbps.value = Math.max(0, Math.min(1024, Math.round(value) || 0));
+    void saveSettings();
+  }
+
   /**
    * Open the receive folder in the system file manager via Tauri.
    */
@@ -207,7 +220,7 @@ export const useSettingsStore = defineStore("settings", () => {
     if (isTauri()) {
       try {
         const result = await openReceiveFolder();
-        if (!result.success) throw new Error(result.error ?? "打开接收文件夹失败");
+        if (!result.success) throw new Error(result.error ?? t("app.openFolderFailed"));
       } catch (err) {
         console.error("[settings] Failed to open receive folder:", err);
       }
@@ -221,6 +234,7 @@ export const useSettingsStore = defineStore("settings", () => {
     requireApproval,
     maxFileSize,
     authorizationExpiryHours,
+    downloadSpeedLimitMbps,
     autostartEnabled,
     closeBehavior,
     // Theme actions (unchanged)
@@ -234,6 +248,7 @@ export const useSettingsStore = defineStore("settings", () => {
     setRequireApproval,
     setMaxFileSize,
     setAuthorizationExpiryHours,
+    setDownloadSpeedLimitMbps,
     setAutostart,
     setCloseBehavior,
     // Tauri-backed actions

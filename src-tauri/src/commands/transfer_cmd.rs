@@ -35,7 +35,17 @@ pub struct PickedFile {
 }
 
 #[tauri::command]
-pub async fn get_file_metadata(file_paths: Vec<String>) -> Result<Vec<PickedFile>, String> {
+pub async fn get_file_metadata(
+    state: State<'_, SharedState>,
+    file_paths: Vec<String>,
+) -> Result<Vec<PickedFile>, String> {
+    let max_file_size = {
+        let s = state.lock().await;
+        s.db.get_settings()
+            .map(|settings| settings.max_file_size)
+            .unwrap_or(0)
+    };
+
     file_paths
         .into_iter()
         .map(|path_str| {
@@ -51,11 +61,19 @@ pub async fn get_file_metadata(file_paths: Vec<String>) -> Result<Vec<PickedFile
                 .map(|name| name.to_string_lossy().to_string())
                 .ok_or_else(|| format!("'{}' has no file name", path_str))?;
 
+            let size = i64::try_from(metadata.len())
+                .map_err(|_| "File is too large to transfer".to_string())?;
+            if max_file_size > 0 && size > max_file_size {
+                return Err(format!(
+                    "'{}' exceeds the configured max file size",
+                    path_str
+                ));
+            }
+
             Ok(PickedFile {
                 path: path_str,
                 name,
-                size: i64::try_from(metadata.len())
-                    .map_err(|_| "File is too large to transfer".to_string())?,
+                size,
             })
         })
         .collect()
@@ -100,6 +118,19 @@ pub async fn send_files_to_device(
     }
 
     let s = state.lock().await;
+
+    // The desktop send path must honour the same per-file size limit as the
+    // mobile upload path (validate_transfer_files) so the setting applies to
+    // both directions.
+    let max_file_size =
+        s.db.get_settings()
+            .map(|settings| settings.max_file_size)
+            .unwrap_or(0);
+    for (_, name, size) in &files {
+        if max_file_size > 0 && *size > max_file_size {
+            return Err(format!("文件“{}”超过设置的文件大小上限。", name));
+        }
+    }
 
     // Only approved devices can be selected as receive targets.
     let target =

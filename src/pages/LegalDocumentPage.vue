@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { useRouter } from "vue-router";
 import { ArrowLeft, FileText, Scale, ShieldCheck } from "lucide-vue-next";
 import { legalConfig } from "@/config/legal";
+import { useLocale } from "@/i18n";
 import {
   getLegalDocument,
   isLegalDocumentType,
@@ -15,6 +16,7 @@ interface Props {
 
 const props = defineProps<Props>();
 const router = useRouter();
+const { t, locale } = useLocale();
 
 const resolvedDocumentType = computed<LegalDocumentType>(() =>
   isLegalDocumentType(props.documentType) ? props.documentType : "privacy"
@@ -35,7 +37,7 @@ const documentIcon = computed(() => {
   <div class="legal-page">
     <button class="back-button" type="button" @click="router.back()">
       <ArrowLeft :size="16" />
-      返回
+      {{ t("common.back") }}
     </button>
 
     <header class="legal-header">
@@ -46,9 +48,10 @@ const documentIcon = computed(() => {
     </header>
 
     <div class="open-source-notice" role="note">
-      本项目以 <strong>{{ legalConfig.license }}</strong> 开源发布；安装包内附许可证全文。
-      本页用于说明软件的隐私、使用和局域网传输风险，不要求配置运营主体或在线服务。
+      {{ t("legal.openSourceNotice", { license: legalConfig.license }) }}
     </div>
+
+    <p v-if="locale !== 'zh-CN'" class="legal-lang-notice">{{ t("legal.chineseOnly") }}</p>
 
     <article class="legal-document">
       <section
@@ -64,10 +67,10 @@ const documentIcon = computed(() => {
       </section>
     </article>
 
-    <nav class="legal-navigation" aria-label="法律文件导航">
-      <RouterLink :to="{ name: 'legal-document', params: { documentType: 'privacy' } }">隐私说明</RouterLink>
-      <RouterLink :to="{ name: 'legal-document', params: { documentType: 'terms' } }">使用协议</RouterLink>
-      <RouterLink :to="{ name: 'legal-document', params: { documentType: 'disclaimer' } }">免责声明</RouterLink>
+    <nav class="legal-navigation" :aria-label="t('legal.navigation')">
+      <RouterLink :to="{ name: 'legal-document', params: { documentType: 'privacy' } }">{{ t("legal.privacy") }}</RouterLink>
+      <RouterLink :to="{ name: 'legal-document', params: { documentType: 'terms' } }">{{ t("legal.terms") }}</RouterLink>
+      <RouterLink :to="{ name: 'legal-document', params: { documentType: 'disclaimer' } }">{{ t("legal.disclaimer") }}</RouterLink>
     </nav>
   </div>
 </template>
@@ -81,6 +84,7 @@ const documentIcon = computed(() => {
 .legal-eyebrow { margin: 16px 0 0; color: var(--color-brand-primary); font-size: var(--text-xs); font-weight: var(--weight-semibold); letter-spacing: .08em; }
 .legal-title { margin: 8px 0 0; color: var(--color-text-primary); font-size: var(--text-2xl); }
 .legal-summary { margin: 10px 0 0; color: var(--color-text-secondary); line-height: 1.7; }
+.legal-lang-notice { margin: 0 0 12px; color: var(--color-text-tertiary); font-size: var(--text-xs); }
 .open-source-notice { margin-bottom: 16px; padding: 14px 16px; color: var(--color-text-secondary); background: var(--color-surface-inset); border: 1px solid var(--color-border); border-radius: var(--radius-md); line-height: 1.65; }
 .open-source-notice strong { color: var(--color-text-primary); }
 .legal-document { padding: 4px 26px; background: var(--color-surface-card); border: 1px solid var(--color-border); border-radius: var(--radius-xl); box-shadow: var(--shadow-card); }

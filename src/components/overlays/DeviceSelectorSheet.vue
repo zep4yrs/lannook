@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { X, Check, Smartphone, Laptop, Monitor, Tablet } from "lucide-vue-next";
 import { useDevicesStore } from "@/stores/devices";
 import { useAppStore } from "@/stores/app";
+import { useLocale } from "@/i18n";
 import type { Device } from "@/types";
 
 defineProps<{
@@ -16,6 +17,7 @@ const emit = defineEmits<{
 
 const devicesStore = useDevicesStore();
 const appStore = useAppStore();
+const { t } = useLocale();
 const devices = computed(() => devicesStore.devices);
 const selectedDeviceId = computed(() => devicesStore.selectedDeviceId);
 
@@ -43,13 +45,13 @@ function getDeviceMeta(device: Device): string {
     web: "Web",
   };
   const platform = platformMap[device.platform] || device.platform;
-  const status = device.online ? "在线" : "离线";
+  const status = device.online ? t("device.online") : t("device.offline");
   return `${platform} · ${status}`;
 }
 
 function handleSelect(device: Device) {
   if (!device.online) {
-    appStore.pushToast("warning", "设备离线", `${device.name} 当前不在线，无法发送。`);
+    appStore.pushToast("warning", t("device.offlineTitle"), t("device.offlineSendDescription", { name: device.name }));
     return;
   }
   emit("select", device.id);
@@ -64,14 +66,14 @@ function handleSelect(device: Device) {
       <div class="sheet">
         <div class="drag-handle" />
         <div class="sheet-header">
-          <span class="sheet-title">选择设备</span>
+          <span class="sheet-title">{{ t("device.selectTitle") }}</span>
           <button class="close-btn" @click="emit('close')">
             <X :size="16" />
           </button>
         </div>
         <div class="device-list">
           <p v-if="devices.length === 0" class="empty-state">
-            暂无可用设备。请先在电脑端批准此设备，或确认目标设备已连接。
+            {{ t("device.noDevices") }}
           </p>
           <button
             v-for="device in devices"

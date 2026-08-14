@@ -5,12 +5,14 @@ import { CheckCircle2 } from "lucide-vue-next";
 import type { TransferTask } from "@/types";
 import { formatBytes, formatRelativeTime } from "@/utils/format";
 import FileIcon from "@/components/files/FileIcon.vue";
+import { useLocale } from "@/i18n";
 
 const props = defineProps<{
   task: TransferTask;
   sourceName: string;
   targetName: string;
 }>();
+const { t } = useLocale();
 
 const firstFile = computed(() => props.task.files[0]);
 const timeText = computed(() =>
@@ -46,7 +48,7 @@ const timeText = computed(() =>
       style="font-size: var(--text-xs); color: var(--state-success)"
     >
       <CheckCircle2 :size="12" :stroke-width="2.5" />
-      <span>已完成</span>
+      <span>{{ t("transfers.completed") }}</span>
     </div>
   </div>
 </template>

@@ -4,7 +4,7 @@ use tokio::io::AsyncReadExt;
 
 use crate::error::AppError;
 
-/// Default chunk size: 4MB
+/// Default chunk size: 512 KiB (524,288 bytes).
 /// Keep upload updates frequent enough for responsive LAN transfer telemetry
 /// without creating excessive HTTP overhead.
 pub const CHUNK_SIZE: i64 = 512 * 1024;
@@ -24,7 +24,13 @@ pub fn sanitize_filename(name: &str) -> Result<String, AppError> {
         .filter(|c| !c.is_control() && !matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*'))
         .collect();
 
-    let sanitized = sanitized.trim().to_string();
+    // Windows cannot create files whose names end in a dot or a space
+    // (e.g. `file.txt.` or `name `), so strip both after trimming.
+    let sanitized = sanitized
+        .trim()
+        .trim_end_matches(['.', ' '])
+        .trim()
+        .to_string();
 
     if sanitized.is_empty() {
         return Err(AppError::InvalidFilename);
@@ -169,13 +175,16 @@ pub fn ensure_receive_folder(path: &Path) -> Result<(), AppError> {
 /// Build an isolated temp-file path for one transfer.
 ///
 /// A filename alone is not a safe temporary-file identity: two phones can
-/// upload `photo.jpg` at the same time. Keeping each transfer in its own
-/// directory prevents data corruption and makes cancellation safe.
-pub fn temp_file_path(receive_folder: &Path, transfer_id: &str, filename: &str) -> PathBuf {
+/// upload photo.jpg at the same time, and two different source names can
+/// sanitize to the same value (file<name>.txt -> filename.txt). Keying the
+/// path by the per-file UUID instead of the name keeps every file in a
+/// transfer on its own temp file, which prevents data corruption and makes
+/// cancellation safe.
+pub fn temp_file_path(receive_folder: &Path, transfer_id: &str, file_id: &str) -> PathBuf {
     receive_folder
         .join(".lannook-tmp")
         .join(transfer_id)
-        .join(format!(".{}.uploading", filename))
+        .join(format!(".{}.uploading", file_id))
 }
 
 /// Return the isolated directory containing temporary files for a transfer.
@@ -193,15 +202,19 @@ mod tests {
     }
 
     #[test]
-    fn temp_paths_are_isolated_per_transfer() {
+    fn temp_paths_are_isolated_per_transfer_and_per_file() {
         let receive = Path::new("C:/receive");
-        let first = temp_file_path(receive, "transfer-a", "photo.jpg");
-        let second = temp_file_path(receive, "transfer-b", "photo.jpg");
+        let first = temp_file_path(receive, "transfer-a", "file-1");
+        let second = temp_file_path(receive, "transfer-b", "file-1");
+        // Same transfer, two different files (even with colliding names) get
+        // distinct temp files because the file UUID is part of the path.
+        let third = temp_file_path(receive, "transfer-a", "file-2");
 
         assert_ne!(first, second);
+        assert_ne!(first, third);
         assert_eq!(
             first,
-            PathBuf::from("C:/receive/.lannook-tmp/transfer-a/.photo.jpg.uploading")
+            PathBuf::from("C:/receive/.lannook-tmp/transfer-a/.file-1.uploading")
         );
         assert_eq!(
             temp_transfer_dir(receive, "transfer-a"),
@@ -216,6 +229,13 @@ mod tests {
             sanitize_filename("C:\\Users\\file.txt").unwrap(),
             "file.txt"
         );
+    }
+
+    #[test]
+    fn test_sanitize_filename_strips_trailing_dots_and_spaces() {
+        assert_eq!(sanitize_filename("file.txt.").unwrap(), "file.txt");
+        assert_eq!(sanitize_filename("name ").unwrap(), "name");
+        assert!(sanitize_filename("  .").is_err());
     }
 
     #[test]

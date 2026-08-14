@@ -3,8 +3,10 @@ import { ref, computed } from "vue";
 import type { Device } from "../types";
 import { isTauri, getDevices, approveDevice as tauriApproveDevice, rejectDevice as tauriRejectDevice, forgetDevice as tauriForgetDevice } from "@/services/tauri";
 import { wsClient } from "@/services/websocket";
+import { useLocale } from "@/i18n";
 
 export const useDevicesStore = defineStore("devices", () => {
+  const { t } = useLocale();
   // Device records must come from the connected host. Never render example
   // devices in the phone UI because they look like real LAN targets.
   const devices = ref<Device[]>([]);
@@ -36,7 +38,7 @@ export const useDevicesStore = defineStore("devices", () => {
 
     return {
       id,
-      name: payload.name ?? defaults.name ?? "新设备",
+      name: payload.name ?? defaults.name ?? t("device.newDevice"),
       platform: payload.platform ?? defaults.platform ?? "web",
       deviceType: payload.deviceType ?? payload.device_type ?? defaults.deviceType ?? "phone",
       ip: payload.ip ?? defaults.ip ?? "",

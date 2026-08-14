@@ -10,10 +10,12 @@ import {
   getConnectionQrCode,
   getAppVersion,
   regenerateConnectionToken,
+  refreshPairingPin,
 } from "@/services/tauri";
 import type { ServiceInfo, ConnectionInfo, QrCodeData } from "@/services/tauri";
 import { wsClient } from "@/services/websocket";
 import { fetchHostStatus } from "@/services/api";
+import { useLocale } from "@/i18n";
 import { APP_NAME } from "@/config/brand";
 import { needsConnectionQrRefresh } from "@/utils/connectionQr";
 
@@ -23,9 +25,10 @@ interface RefreshConnectionDataOptions {
 }
 
 export const useAppStore = defineStore("app", () => {
+  const { t } = useLocale();
   const serverRunning = ref<AppState["serverRunning"]>(false);
   const trayReady = ref(isTauri());
-  const networkName = ref<AppState["networkName"]>("本地网络");
+  const networkName = ref<AppState["networkName"]>("");
   const localIp = ref<AppState["localIp"]>("");
   const deviceName = ref<AppState["deviceName"]>(APP_NAME);
   const connectionToken = ref<AppState["connectionToken"]>("");
@@ -101,7 +104,7 @@ export const useAppStore = defineStore("app", () => {
     if (isTauri()) {
       try {
         const result = await startLocalService();
-        if (!result.success) throw new Error(result.error ?? "服务启动失败");
+        if (!result.success) throw new Error(result.error ?? t("app.startServiceFailed"));
         const status = await getLocalServiceStatus();
         serviceStatus.value = status;
         serverRunning.value = status.status === "running";
@@ -116,7 +119,7 @@ export const useAppStore = defineStore("app", () => {
         } catch {
           serverRunning.value = false;
         }
-        pushToast("error", "启动失败", err instanceof Error ? err.message : "无法启动服务");
+        pushToast("error", t("app.startFailed"), err instanceof Error ? err.message : t("app.startServiceFailed"));
       }
     }
   }
@@ -128,14 +131,14 @@ export const useAppStore = defineStore("app", () => {
     if (isTauri()) {
       try {
         const result = await stopLocalService();
-        if (!result.success) throw new Error(result.error ?? "服务停止失败");
+        if (!result.success) throw new Error(result.error ?? t("app.stopServiceFailed"));
         const status = await getLocalServiceStatus();
         serviceStatus.value = status;
         serverRunning.value = status.status === "running";
         qrCode.value = null;
       } catch (err) {
         console.error("[app] Failed to stop server:", err);
-        pushToast("error", "停止失败", err instanceof Error ? err.message : "无法停止服务");
+        pushToast("error", t("app.stopFailed"), err instanceof Error ? err.message : t("app.stopServiceFailed"));
       }
     }
   }
@@ -212,6 +215,20 @@ export const useAppStore = defineStore("app", () => {
     return connectionRefresh;
   }
 
+  /** Refresh the 6-digit pairing PIN shown in the connect panel. */
+  async function refreshPairingPinCode(): Promise<string | null> {
+    try {
+      const pin = await refreshPairingPin();
+      if (connectionInfo.value) {
+        connectionInfo.value = { ...connectionInfo.value, pin };
+      }
+      return pin;
+    } catch (error) {
+      console.error("[app] Failed to refresh pairing PIN:", error);
+      return null;
+    }
+  }
+
   /** Switch the QR code to another currently active LAN path (for example a
    * Windows mobile-hotspot adapter) without changing the listening socket. */
   async function selectConnectionAddress(ip: string) {
@@ -255,12 +272,12 @@ export const useAppStore = defineStore("app", () => {
 
     wsClient.on("reconnect_failed", () => {
       connectionLost.value = true;
-      pushToast("error", "连接已断开", "无法连接到服务，实时进度已暂停。请点击重连。");
+      pushToast("error", t("app.connectLost"), t("app.connectLostDescription"));
     });
     wsClient.on("connected", () => {
       if (connectionLost.value) {
         connectionLost.value = false;
-        pushToast("success", "已重新连接", "实时进度已恢复。");
+        pushToast("success", t("app.reconnected"), t("app.reconnectedDescription"));
       }
     });
   }
@@ -293,7 +310,7 @@ export const useAppStore = defineStore("app", () => {
         console.error("[app] Failed to regenerate token via backend:", err);
       }
     }
-    pushToast("info", "请使用桌面应用", "连接令牌只能在桌面应用中重新生成。");
+    pushToast("info", t("app.useDesktopApp"), t("app.useDesktopAppDescription"));
   }
 
   /**
@@ -351,6 +368,7 @@ export const useAppStore = defineStore("app", () => {
     manualReconnect,
     setDeviceName,
     regenerateToken,
+    refreshPairingPinCode,
     pushToast,
     dismissToast,
     openDeviceSheet,

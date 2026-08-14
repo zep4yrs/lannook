@@ -33,6 +33,8 @@ const hostName = ref("");
 
 const connectionLabel = computed(() => {
   switch (connectionPhase.value) {
+    case "pin_entry":
+      return t("mobile.pinEntry");
     case "connected":
       return t("mobile.connectedTo", { name: hostName.value || t("mobile.host") });
     case "pending_approval":
@@ -79,6 +81,13 @@ watch(
   },
   { immediate: true }
 );
+
+const pinInput = ref("");
+
+async function submitPin() {
+  const ok = await mobileSession.submitPin(pinInput.value);
+  if (ok) pinInput.value = "";
+}
 
 function toggleTheme() {
   const current = settingsStore.themeMode;
@@ -159,6 +168,29 @@ function closeMenu() {
 
     <!-- Main Content -->
     <main class="mobile-content">
+      <div v-if="connectionPhase === 'pin_entry'" class="pin-entry">
+        <p class="pin-entry-hint">{{ t("mobile.pinHint") }}</p>
+        <div class="pin-entry-box">
+          <input
+            v-model="pinInput"
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            pattern="[0-9]*"
+            maxlength="6"
+            class="pin-entry-input"
+            :placeholder="t('mobile.pinPlaceholder')"
+            @keyup.enter="submitPin"
+          />
+          <button
+            type="button"
+            class="pin-entry-submit"
+            :disabled="pinInput.length !== 6"
+            @click="submitPin"
+          >
+            {{ t("mobile.pinSubmit") }}
+          </button>
+        </div>
+      </div>
       <p v-if="connectionError" class="session-error">{{ connectionError }}</p>
       <div v-if="canRequestAccess" class="access-retry">
         <p>{{ t("mobile.accessRequired") }}</p>
@@ -356,6 +388,63 @@ function closeMenu() {
   margin: 0 auto;
   padding-top: 48px;
   min-height: 100vh;
+}
+
+.pin-entry {
+  margin: 24px 12px 0;
+  padding: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+}
+
+.pin-entry-hint {
+  margin: 0 0 12px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.pin-entry-box {
+  display: flex;
+  gap: 8px;
+}
+
+.pin-entry-input {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-page);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: var(--text-lg);
+  letter-spacing: 0.35em;
+  text-align: center;
+}
+
+.pin-entry-input:focus {
+  outline: none;
+  border-color: var(--color-brand-primary);
+  box-shadow: 0 0 0 2px var(--color-brand-primary-soft);
+}
+
+.pin-entry-submit {
+  min-height: 44px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--color-brand-primary);
+  color: #fff;
+  font: inherit;
+  font-size: var(--text-sm);
+}
+
+.pin-entry-submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .session-error {

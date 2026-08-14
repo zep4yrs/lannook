@@ -3,8 +3,9 @@ import { shallowRef } from "vue";
 import {
   acceptTransfer,
   getCurrentDevice,
-  getDownloadUrl,
+  downloadFile,
   getPendingTransfersApi,
+  pairWithPin,
   registerDevice,
   rejectTransfer,
   validateToken,
@@ -23,6 +24,7 @@ export interface IncomingTransfer {
 
 export type MobileConnectionPhase =
   | "initializing"
+  | "pin_entry"
   | "pending_approval"
   | "connecting"
   | "connected"
@@ -38,6 +40,10 @@ interface RegistrationResponse {
 }
 
 const MOBILE_CLIENT_ID_KEY = "lannook-mobile-client-id";
+// The issued session token is persisted so a page refresh can prove it still
+// owns its device record. Without it, the server treats the browser as an
+// unknown peer and requires re-approval on every reload.
+const MOBILE_SESSION_TOKEN_KEY = "lannook-mobile-session-token";
 const LEGACY_MOBILE_CLIENT_ID_KEYS = ["lynqo-mobile-client-id"] as const;
 let transientClientIdSequence = 0;
 let transientClientId: string | null = null;
@@ -309,6 +315,12 @@ export const useMobileSessionStore = defineStore("mobileSession", () => {
   }
 
   function setSession(token: string, id: string, approved: boolean) {
+    try {
+      window.localStorage.setItem(MOBILE_SESSION_TOKEN_KEY, token);
+    } catch {
+      // Private browsing may disable storage; the in-memory token still works
+      // for this tab.
+    }
     const tokenChanged = socketToken !== token;
     sessionToken.value = token;
     deviceId.value = id;
@@ -326,6 +338,13 @@ export const useMobileSessionStore = defineStore("mobileSession", () => {
 
   async function registerCurrentBrowser(token: string): Promise<RegistrationResponse> {
     const clientId = getStableClientId();
+    let storedSessionToken: string | undefined;
+    try {
+      storedSessionToken = window.localStorage.getItem(MOBILE_SESSION_TOKEN_KEY) ?? undefined;
+    } catch {
+      // Storage may be unavailable; registration without a proof still works,
+      // it just requires a fresh approval.
+    }
     return registerDevice({
       name: await getBrowserDeviceName(clientId),
       platform: detectPlatform(),
@@ -333,6 +352,7 @@ export const useMobileSessionStore = defineStore("mobileSession", () => {
       userAgent: navigator.userAgent,
       clientId,
       token,
+      sessionToken: storedSessionToken,
     }) as Promise<RegistrationResponse>;
   }
 
@@ -355,8 +375,9 @@ export const useMobileSessionStore = defineStore("mobileSession", () => {
     const nextPairingToken = token?.trim() ?? "";
     if (!nextPairingToken) {
       reset();
-      connectionPhase.value = "error";
-      connectionError.value = translate("mobile.missingPairingToken");
+      // No token in the URL: offer the desktop PIN entry flow instead of an
+      // error, so a browser that cannot scan the QR code can still connect.
+      connectionPhase.value = "pin_entry";
       return;
     }
     if (nextPairingToken === pairingToken && isReady.value) {
@@ -405,6 +426,28 @@ export const useMobileSessionStore = defineStore("mobileSession", () => {
     }
   }
 
+  /**
+   * Exchange the 6-digit code shown on the desktop for the pairing
+   * capability, then continue with the exact same flow as a scanned token.
+   */
+  async function submitPin(pin: string): Promise<boolean> {
+    const clean = pin.replace(/\D/g, "").slice(0, 6);
+    if (clean.length !== 6) return false;
+    connectionError.value = null;
+    connectionPhase.value = "initializing";
+    try {
+      const paired = await pairWithPin(clean);
+      if (!paired.token) throw new Error(translate("mobile.pinInvalid"));
+      await initialize(paired.token);
+      return true;
+    } catch (error) {
+      connectionPhase.value = "pin_entry";
+      connectionError.value =
+        error instanceof Error ? error.message : translate("mobile.pinInvalid");
+      return false;
+    }
+  }
+
   async function acceptIncomingTransfer(transferId: string) {
     const token = sessionToken.value;
     const transfer = pendingReceiveTransfer.value;
@@ -424,12 +467,17 @@ export const useMobileSessionStore = defineStore("mobileSession", () => {
         if (!downloadToken) {
           throw new Error(translate("mobile.noDownloadCredential", { name: file.name }));
         }
+        // The one-time download token travels in the Authorization header so
+        // it never lands in browser history or server access logs.
+        const blob = await downloadFile(transferId, file.id, downloadToken, deviceId.value);
+        const url = URL.createObjectURL(blob);
         const link = document.createElement("a");
-        link.href = getDownloadUrl(transferId, file.id, downloadToken, deviceId.value);
+        link.href = url;
         link.download = file.name;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
       }
 
       clearIncomingRequest();
@@ -467,6 +515,7 @@ export const useMobileSessionStore = defineStore("mobileSession", () => {
     showReceiveDialog,
     initialize,
     requestAccess,
+    submitPin,
     syncApprovalState,
     refreshPendingReceiveTransfers,
     acceptIncomingTransfer,

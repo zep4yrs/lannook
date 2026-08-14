@@ -86,9 +86,11 @@ import { FileVideo, Pause, Play, XCircle, Clock } from "lucide-vue-next";
 import { useMobileSessionStore } from "@/stores/mobileSession";
 import { useMobileTransfers } from "@/composables/useMobileTransfers";
 import { useDevicesStore } from "@/stores/devices";
+import { useLocale } from "@/i18n";
 
 const mobileSession = useMobileSessionStore();
 const devicesStore = useDevicesStore();
+const { t } = useLocale();
 const { sessionToken, isApproved } = storeToRefs(mobileSession);
 const {
   currentTransfer,
@@ -145,8 +147,8 @@ const isActionable = computed(() => {
 const queuedFiles = computed(() => currentTransfer.value?.files.slice(1) ?? []);
 const targetDeviceName = computed(() => {
   const targetId = currentTransfer.value?.targetDeviceId;
-  if (!targetId || targetId === "local") return "电脑（本机）";
-  return devicesStore.devices.find((device) => device.id === targetId)?.name ?? "目标设备";
+  if (!targetId || targetId === "local") return t("mobile.localComputer");
+  return devicesStore.devices.find((device) => device.id === targetId)?.name ?? t("mobile.targetDevice");
 });
 
 function formatBytes(bytes: number): string {
@@ -187,16 +189,16 @@ function handleCancel() {
 <template>
   <div class="mobile-transfer-page">
     <p v-if="error" class="transfer-error">{{ error }}</p>
-    <p v-if="loading && !currentTransfer" class="empty-state">正在加载传输状态…</p>
+    <p v-if="loading && !currentTransfer" class="empty-state">{{ t("mobile.loadingTransfers") }}</p>
     <template v-else-if="currentTransfer">
     <!-- Current File Section -->
     <section class="current-file-section">
       <div class="file-icon-large">
         <FileVideo :size="36" />
       </div>
-      <span class="current-file-name">{{ currentFile?.name ?? "无活动传输" }}</span>
+      <span class="current-file-name">{{ currentFile?.name ?? t("mobile.noActiveTransfer") }}</span>
       <span class="current-file-size">{{ formatBytes(currentFile?.size ?? 0) }}</span>
-      <span class="current-file-target">发送至 {{ targetDeviceName }}</span>
+      <span class="current-file-target">{{ t("mobile.sendToLabel", { name: targetDeviceName }) }}</span>
     </section>
 
     <!-- Progress Section -->
@@ -213,22 +215,22 @@ function handleCancel() {
     <!-- Stats Row -->
     <section class="stats-row">
       <div class="stat-item">
-        <span class="stat-label">已传输</span>
+        <span class="stat-label">{{ t("mobile.transferredStat") }}</span>
         <span class="stat-value">{{ transferredLabel }}</span>
       </div>
       <div class="stat-divider" />
       <div class="stat-item">
-        <span class="stat-label">速度</span>
+        <span class="stat-label">{{ t("mobile.speedStat") }}</span>
         <span class="stat-value">{{ speedLabel }}</span>
       </div>
       <div class="stat-divider" />
       <div class="stat-item">
-        <span class="stat-label">剩余</span>
+        <span class="stat-label">{{ t("mobile.remainingStat") }}</span>
         <span class="stat-value">{{ remainingLabel }}</span>
       </div>
       <div class="stat-divider" />
       <div class="stat-item">
-        <span class="stat-label">已用</span>
+        <span class="stat-label">{{ t("mobile.elapsedStat") }}</span>
         <span class="stat-value">{{ elapsedLabel }}</span>
       </div>
     </section>
@@ -241,7 +243,7 @@ function handleCancel() {
         @click="handleResume"
       >
         <Play :size="15" />
-        <span>继续</span>
+        <span>{{ t("mobile.continue") }}</span>
       </button>
       <button
         v-else
@@ -250,11 +252,11 @@ function handleCancel() {
         @click="handlePause"
       >
         <Pause :size="15" />
-        <span>暂停</span>
+        <span>{{ t("mobile.pauseAction") }}</span>
       </button>
       <button class="btn-cancel" @click="handleCancel">
         <XCircle :size="15" />
-        <span>取消</span>
+        <span>{{ t("transfers.cancel") }}</span>
       </button>
     </section>
 

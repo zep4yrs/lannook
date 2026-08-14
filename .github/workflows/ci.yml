@@ -36,6 +36,11 @@ jobs:
       - name: Cargo clippy
         working-directory: src-tauri
         run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+      - name: Cargo audit
+        working-directory: src-tauri
+        run: cargo audit
       - name: Cargo test
         working-directory: src-tauri
         run: cargo test

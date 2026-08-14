@@ -17,3 +17,9 @@ src-tauri/gen/schemas/
 Thumbs.db
 .idea/
 .vscode/
+
+# Local installer output (attach installers to GitHub Releases instead)
+release/
+
+# Temporary diagnostics
+check_out.txt

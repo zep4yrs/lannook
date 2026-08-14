@@ -8,6 +8,7 @@ import {
 } from "@/content/legalDocuments";
 import type { LegalConsentStatus } from "@/composables/useLegalConsent";
 import { APP_NAME } from "@/config/brand";
+import { useLocale } from "@/i18n";
 
 interface Props {
   status: LegalConsentStatus;
@@ -21,6 +22,7 @@ interface Emits {
 
 const props = defineProps<Props>();
 const emit = defineEmits<Emits>();
+const { t } = useLocale();
 
 const activeDocumentType = shallowRef<LegalDocumentType>("terms");
 const hasReviewed = shallowRef(false);
@@ -29,9 +31,9 @@ const document = computed(() => getLegalDocument(activeDocumentType.value, legal
 const isDeclined = computed(() => props.status === "declined");
 
 const documentTabs = [
-  { type: "terms", label: "使用协议", icon: FileText },
-  { type: "privacy", label: "隐私说明", icon: ShieldCheck },
-  { type: "disclaimer", label: "免责声明", icon: Scale },
+  { type: "terms", labelKey: "legal.terms", icon: FileText },
+  { type: "privacy", labelKey: "legal.privacy", icon: ShieldCheck },
+  { type: "disclaimer", labelKey: "legal.disclaimer", icon: Scale },
 ] as const;
 </script>
 
@@ -42,16 +44,16 @@ const documentTabs = [
         <header class="consent-header">
           <div class="consent-icon"><ShieldCheck :size="24" /></div>
           <div>
-            <p class="consent-eyebrow">首次启动确认</p>
-            <h1 id="consent-title" class="consent-title">使用前请阅读并确认</h1>
+            <p class="consent-eyebrow">{{ t("legal.consentEyebrow") }}</p>
+            <h1 id="consent-title" class="consent-title">{{ t("legal.consentTitle") }}</h1>
           </div>
         </header>
 
         <p class="consent-intro">
-          {{ APP_NAME }} 是 GPL-3.0-only 开源的局域网文件传输工具。文件会在你授权的设备和本机目录之间流转；请仅在可信网络中使用，并自行备份重要文件。
+          {{ t("legal.consentDescription", { name: APP_NAME }) }}
         </p>
 
-        <div class="document-tabs" role="tablist" aria-label="协议文件">
+        <div class="document-tabs" role="tablist" :aria-label="t('legal.tabsLabel')">
           <button
             v-for="tab in documentTabs"
             :key="tab.type"
@@ -63,7 +65,7 @@ const documentTabs = [
             @click="activeDocumentType = tab.type"
           >
             <component :is="tab.icon" :size="15" />
-            {{ tab.label }}
+            {{ t(tab.labelKey) }}
           </button>
         </div>
 
@@ -86,25 +88,25 @@ const documentTabs = [
 
         <label class="review-check">
           <input v-model="hasReviewed" type="checkbox" />
-          <span>我已阅读并理解以上说明，接受 GPL-3.0-only 的开源许可与使用风险。</span>
+          <span>{{ t("legal.acceptStatement") }}</span>
         </label>
 
         <footer class="consent-actions">
-          <button class="decline-button" type="button" @click="emit('decline')">我不同意</button>
+          <button class="decline-button" type="button" @click="emit('decline')">{{ t("legal.decline") }}</button>
           <button class="accept-button" type="button" :disabled="!hasReviewed" @click="emit('accept')">
             <Check :size="16" />
-            同意并进入 {{ APP_NAME }}
+            {{ t("legal.acceptAndEnter", { name: APP_NAME }) }}
           </button>
         </footer>
       </template>
 
       <template v-else>
         <div class="declined-icon"><AlertTriangle :size="26" /></div>
-        <h1 id="consent-title" class="consent-title">未接受协议，无法继续使用</h1>
+        <h1 id="consent-title" class="consent-title">{{ t("legal.deniedTitle") }}</h1>
         <p class="declined-message">
-          你可以关闭应用，或重新阅读使用协议、隐私说明和免责声明后再确认。拒绝不会写入本机，下次启动仍会询问。
+          {{ t("legal.deniedDescription") }}
         </p>
-        <button class="accept-button" type="button" @click="emit('reconsider')">重新阅读协议</button>
+        <button class="accept-button" type="button" @click="emit('reconsider')">{{ t("legal.reread") }}</button>
       </template>
     </section>
   </div>

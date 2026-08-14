@@ -1,4 +1,4 @@
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::http::{header, StatusCode};
 use axum::response::Response;
 use std::path::Path;
@@ -118,6 +118,24 @@ pub async fn stream_file_response(
     }
 }
 
+/// Sleep long enough after each chunk to keep the stream near the configured
+/// bandwidth cap. `0` disables throttling.
+async fn pace_result(
+    result: Result<Bytes, std::io::Error>,
+    speed_limit_bytes_per_sec: u64,
+) -> Result<Bytes, std::io::Error> {
+    if speed_limit_bytes_per_sec > 0 {
+        if let Ok(ref bytes) = result {
+            let chunk_len = bytes.len() as u64;
+            let target = std::time::Duration::from_secs_f64(
+                chunk_len as f64 / speed_limit_bytes_per_sec as f64,
+            );
+            tokio::time::sleep(target).await;
+        }
+    }
+    result
+}
+
 /// Build a streaming response that also tracks how many bytes have been sent
 /// so far via a shared atomic counter. The caller can use the counter to
 /// broadcast progress events while the stream is being consumed.
@@ -127,6 +145,8 @@ pub async fn stream_file_with_progress(
     file_size: u64,
     mime_type: &str,
     bytes_counter: Arc<AtomicU64>,
+    // Optional bandwidth cap in bytes per second; 0 disables throttling.
+    speed_limit_bytes_per_sec: u64,
 ) -> Result<Response, std::io::Error> {
     use futures_util::StreamExt;
 
@@ -144,11 +164,11 @@ pub async fn stream_file_with_progress(
             let stream = ReaderStream::with_capacity(limited, STREAM_CHUNK_SIZE);
 
             let counter = bytes_counter.clone();
-            let counting_stream = stream.map(move |result| {
+            let counting_stream = stream.then(move |result| {
                 if let Ok(ref bytes) = result {
                     counter.fetch_add(bytes.len() as u64, Ordering::Relaxed);
                 }
-                result
+                pace_result(result, speed_limit_bytes_per_sec)
             });
 
             let body = Body::from_stream(counting_stream);
@@ -170,11 +190,11 @@ pub async fn stream_file_with_progress(
             let stream = ReaderStream::with_capacity(file, STREAM_CHUNK_SIZE);
 
             let counter = bytes_counter.clone();
-            let counting_stream = stream.map(move |result| {
+            let counting_stream = stream.then(move |result| {
                 if let Ok(ref bytes) = result {
                     counter.fetch_add(bytes.len() as u64, Ordering::Relaxed);
                 }
-                result
+                pace_result(result, speed_limit_bytes_per_sec)
             });
 
             let body = Body::from_stream(counting_stream);
