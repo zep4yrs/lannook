@@ -23,3 +23,4 @@ release/
 
 # Temporary diagnostics
 check_out.txt
+alerts*.json
