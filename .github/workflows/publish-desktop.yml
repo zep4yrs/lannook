@@ -49,7 +49,7 @@ jobs:
             assets: src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: inputs.platform == 'all' || inputs.platform == matrix.platform
 
       - uses: actions/setup-node@v4
