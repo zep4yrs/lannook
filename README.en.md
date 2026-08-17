@@ -25,7 +25,7 @@ The current release is intended for trusted local networks and has no public rel
 
 ## Download
 
-Get the desktop installer from the [latest Release](https://github.com/by-fengqiao/lannook/releases/latest). Phones and tablets open the QR-code address in a browser and do not need a separate client. Historical packages through `v26.1.7` retain their former LYNQO filenames; the first LanNook release will use the filenames below.
+Get the desktop installer from the [latest Release](https://github.com/by-fengqiao/lannook/releases/latest). Phones and tablets open the QR-code address in a browser and do not need a separate client. Historical packages through `v26.1.7` retain their former LYNQO filenames; starting with the first LanNook release, installers use the filenames below.
 
 | Desktop system | Download | Notes |
 | --- | --- | --- |
@@ -44,7 +44,7 @@ LanNook automatically migrates LYNQO device approvals, transfer records, setting
 ## First use
 
 1. Start LanNook on the computer and confirm that the top bar says the service is running.
-2. Select **Connect device**, then scan the QR code with a phone. You can also enter the full address shown in the panel.
+2. Select **Connect device**, then scan the QR code with a phone. You can also enter the full address shown in the panel, or the 6-digit PIN shown there when scanning is not possible.
 3. By default, a request from a new device appears on the desktop home screen. Approve it for the current service session, or select **Trust this device** before approving it. Trust can be revoked from the Devices page.
 4. Choose files and a target on either device. The Transfer Center shows progress, speed, remaining time, and the final result.
 
@@ -52,13 +52,15 @@ When one phone sends to another, the file is uploaded to the computer running La
 
 ## What works today
 
-- The mobile interface runs in a modern browser and needs no separate installation. Language switching is available, although a few mobile prompts still need English translations.
-- File transfer works in both directions between a phone and the desktop. The desktop supports file selection and drag-and-drop.
-- One Transfer Center shows pending, active, completed, and paused work, plus errors from the current session.
-- Uploads use 512 KiB chunks and retry a failed chunk automatically. Cross-session resume and continuing a failed task are still being completed.
-- Both interfaces receive live progress, smoothed speed, and estimated time remaining. The desktop Transfer Center currently shows a SHA-256 value and shorter fingerprint for the first file, for manual comparison.
+- The mobile interface runs in a modern browser and needs no separate installation. PWA support lets iOS and Android users add the page to the home screen for an app-like icon and fullscreen experience. The UI is fully bilingual (zh/en) and the language can be switched in Settings.
+- File transfer works in both directions between a phone and the desktop; the desktop supports file selection and drag-and-drop, and the mobile file picker shows image thumbnails.
+- One Transfer Center shows pending, active, completed, and paused work, plus errors from the current session. It supports searching by file name or device and multi-select batch retry and batch delete (files already received on disk are kept).
+- Uploads use 512 KiB chunks with automatic per-chunk retry and exponential backoff. If the network drops, the upload resumes from its chunk checkpoint (up to 2 automatic retries). A failed upload or download can be continued directly from its completed chunks; after a computer or service restart, in-flight transfers switch to a resumable state for cross-session continuation.
+- Both interfaces show live progress, smoothed speed, and estimated time remaining. After a transfer completes, the SHA-256 digest is computed in the background with visible progress on large files; the desktop Transfer Center lets you compare the full checksum and a short fingerprint for the first file.
+- Can't scan the QR code? Enter the 6-digit PIN shown on the desktop panel on the phone's connection page. The code is single-use, expires after 5 minutes, and locks out after repeated wrong entries.
+- A download speed limit (MiB/s, 0 = unlimited) keeps large transfers from saturating the network; new-device approvals can carry an expiry (until the service closes / 1 hour / 24 hours / 7 days) and are revoked automatically.
 - Device, approval, and transfer records are stored in a local SQLite database. The desktop receive folder is configurable.
-- Connection tools expose address selection, mDNS state, a listener self-check, and Windows Firewall diagnostics.
+- Connection tools expose address selection, mDNS state, a listener self-check, and Windows Firewall diagnostics. Transfer events are pushed to both ends over WebSocket in real time, with no manual refresh.
 - Desktop integration includes a tray icon, launch at login, and configurable close behavior: quit, hide to tray, or ask.
 - The About page can check for and install releases signed with the project's updater key.
 
@@ -85,7 +87,7 @@ The panel's local self-check proves that the service is listening on the selecte
 
 ## Run from source
 
-You need Node.js 20.x or 22+, Rust stable, and the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your platform. CI uses Node.js 20. Windows normally also needs MSVC Build Tools and WebView2.
+You need Node.js 20.x or 22+, Rust stable, and the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your platform. CI uses Node.js 22. Windows normally also needs MSVC Build Tools and WebView2.
 
 ```bash
 git clone https://github.com/by-fengqiao/lannook.git
@@ -126,9 +128,12 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 Before opening an issue, search the existing [Issues](https://github.com/by-fengqiao/lannook/issues). A useful report includes the operating-system version, network setup, reproduction steps, and connection diagnostics. See the [Contribution Guide](CONTRIBUTING.en.md) for code submissions or the [中文贡献指南](CONTRIBUTING.md).
 
-- [v26.1.7 release notes](docs/releases/v26.1.7.md)
+- [FAQ](docs/FAQ.en.md)
+- [v26.3.0 release notes](release-notes.md)
+- [v26.2.2 fix notes](docs/releases/v26.2.2.md)
 - [v26.2.1 fix notes](docs/releases/v26.2.1.md)
 - [v26.2.0 rename notes](docs/releases/v26.2.0.md)
+- [v26.1.7 release notes](docs/releases/v26.1.7.md)
 - [LYNQO to LanNook migration](docs/migrations/lynqo-to-lannook.md)
 - Created and maintained by [by-fengqiao](https://github.com/by-fengqiao)
 

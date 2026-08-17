@@ -32,6 +32,7 @@ cargo test
 - Keep each pull request focused on one clear problem.
 - Use a descriptive title. Explain the context, change, verification, and known limitations in the body.
 - Include a real screenshot or recording for interaction or visual changes.
+- For connection, transfer, or cross-platform changes, refer to the [compatibility checklist](docs/testing/compatibility.md) and describe the verification scope and results.
 - Do not commit `node_modules`, `dist`, `src-tauri/target`, local databases, logs, tokens, passwords, or `.env` files.
 - For device authorization, LAN access, file paths, transfer permissions, or private data, explain the threat model and failure behavior.
 

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 常见问题 / FAQ
+    url: https://github.com/by-fengqiao/lannook/blob/main/docs/FAQ.md
+    about: 连接、传输、安全等常见问题请先查 FAQ。Check the FAQ for connection, transfer, and security questions.
+  - name: 更新计划 / Roadmap
+    url: https://github.com/by-fengqiao/lannook/blob/main/docs/roadmap/lannook-update-plan.md
+    about: 了解项目方向、版本拆分与暂不优先的功能。

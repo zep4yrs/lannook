@@ -1,0 +1,93 @@
+name: Bug report / 问题反馈
+description: 报告连接、传输或界面问题。Report a connection, transfer, or UI problem.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请先搜索已有 [Issues](https://github.com/by-fengqiao/lannook/issues) 是否已有人反馈过相同问题。
+        请尽量填写以下信息；带 `*` 的字段为必填。信息越完整，越容易定位问题。
+        Before filing, please search the [existing issues](https://github.com/by-fengqiao/lannook/issues). Fields marked `*` are required.
+  - type: input
+    id: version
+    attributes:
+      label: "应用版本 * / App version"
+      description: "在「关于」页面查看，形如 26.3.0。Check the About page."
+      placeholder: "26.3.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: "电脑操作系统 * / Desktop OS"
+      options:
+        - Windows 10
+        - Windows 11
+        - macOS (Apple silicon)
+        - macOS (Intel)
+        - Linux (distro: ____)
+        - 其他 / Other
+    validations:
+      required: true
+  - type: input
+    id: phone
+    attributes:
+      label: "手机型号与浏览器 / Phone model and browser"
+      description: "例如 iPhone 13 + Safari；Android 14 + Chrome。"
+      placeholder: "iPhone 15 + Safari"
+  - type: dropdown
+    id: network
+    attributes:
+      label: "网络环境 / Network setup"
+      options:
+        - 家庭路由器 / Home router
+        - 电脑热点 / Computer hotspot
+        - 访客网络 / Guest Wi-Fi
+        - 校园/公司网络 / Campus or corporate network
+        - 手机热点 / Phone hotspot
+        - 其他 / Other
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: "复现步骤 * / Steps to reproduce"
+      description: "从启动应用开始，按步骤描述发生了什么。"
+      placeholder: |
+        1. 启动 LanNook，服务显示“运行中”
+        2. 用手机扫描二维码…
+        3. …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: "期望行为 / Expected behavior"
+      placeholder: "应该…"
+  - type: textarea
+    id: actual
+    attributes:
+      label: "实际行为 * / Actual behavior"
+      description: "包括界面提示的原文（如错误信息、状态文本）。"
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: |
+        ## 连接类问题请附加 / Attach for connection problems
+        打开「连接设备」面板，点击「连接诊断」，把诊断结果（地址、mDNS 状态、监听自检、防火墙状态）粘贴或截图到下面。
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: "连接诊断结果 / Connection diagnostics output"
+      placeholder: "粘贴诊断面板的输出，或说明面板不可用时的现象（超时/拒绝/无响应）。"
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: "确认 / Confirmation"
+      options:
+        - label: "我已搜索过现有 Issues，确认没有相同报告 / I searched existing issues first"
+          required: true
+        - label: "我理解局域网明文传输（无 TLS）是设计边界 / I understand plaintext LAN transport (no TLS) is a deliberate boundary"
+          required: false
