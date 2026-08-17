@@ -506,7 +506,7 @@ async function handleCancel() {
           <Loader :size="14" class="spin" />
           <span class="upload-progress-name">{{ uploadProgress.fileName }}</span>
           <span v-if="uploadProgress.status === 'retrying'" class="retry-badge">
-            网络中断，自动重试中…
+            {{ t("mobile.retryAuto") }}
           </span>
         </div>
         <div class="upload-progress-bar">

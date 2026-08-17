@@ -129,7 +129,7 @@ const speedLabel = computed(() => {
 const remainingLabel = computed(() => {
   const seconds = currentTransfer.value?.remainingSeconds;
   if (!seconds || seconds <= 0) return "—";
-  return `${seconds} 秒`;
+  return t("mobile.seconds", { seconds });
 });
 const elapsedLabel = computed(() => {
   const transfer = currentTransfer.value;
@@ -262,7 +262,7 @@ function handleCancel() {
 
     <!-- File Queue Section -->
     <section v-if="queuedFiles.length > 0" class="queue-section">
-      <span class="queue-label">等待传输 ({{ queuedFiles.length }})</span>
+      <span class="queue-label">{{ t("mobile.queuedWaiting", { count: queuedFiles.length }) }}</span>
       <div class="queue-list">
         <div
           v-for="item in queuedFiles"
@@ -278,14 +278,14 @@ function handleCancel() {
           </div>
           <span class="queue-badge">
             <Clock :size="11" />
-            等待中
+            {{ t("mobile.queuePending") }}
           </span>
         </div>
       </div>
     </section>
     </template>
     <section v-else class="empty-state">
-      暂无可查看的传输。
+      {{ t("mobile.noTransfersEmpty") }}
     </section>
   </div>
 </template>

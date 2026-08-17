@@ -547,6 +547,8 @@ onUnmounted(() => {
                 <details v-if="getChecksum(task)" class="checksum-details">
                   <summary class="detail-value detail-value--mono" :title="t('transfers.fullShaHint')">
                     {{ getShortChecksum(getChecksum(task)!) }}
+                    <span class="checksum-toggle checksum-toggle--expand">{{ t("transfers.expand") }}</span>
+                    <span class="checksum-toggle checksum-toggle--collapse">{{ t("transfers.collapse") }}</span>
                   </summary>
                   <code class="checksum-full">{{ getChecksum(task) }}</code>
                 </details>
@@ -1032,16 +1034,23 @@ onUnmounted(() => {
   display: none;
 }
 
-.checksum-details summary::after {
-  content: "展开";
+.checksum-toggle {
   margin-left: 8px;
   color: var(--color-brand-primary);
   font-family: var(--font-sans);
   font-size: var(--text-xs);
 }
 
-.checksum-details[open] summary::after {
-  content: "收起";
+.checksum-details summary .checksum-toggle--collapse {
+  display: none;
+}
+
+.checksum-details[open] summary .checksum-toggle--expand {
+  display: none;
+}
+
+.checksum-details[open] summary .checksum-toggle--collapse {
+  display: inline;
 }
 
 .checksum-full {

@@ -278,7 +278,7 @@ function filterOversized(files: PendingFileInput[]): PendingFileInput[] {
     appStore.pushToast(
       "warning",
       t("home.fileTooLarge"),
-      `已跳过 ${rejected.length} 个超过大小限制的文件：${rejected.join("、")}`
+      t("home.skippedOversized", { count: rejected.length, names: rejected.join("、") })
     );
   }
   return accepted;
@@ -293,10 +293,10 @@ async function handleSend() {
 
   try {
     if (!targetDevice.approved) {
-      throw new Error(`请先在“设备”页面批准 ${targetDevice.name}。`);
+      throw new Error(t("home.deviceNotAuthorizedDescription", { name: targetDevice.name }));
     }
     if (!targetDevice.online) {
-      throw new Error(`${targetDevice.name} 已离线，请保持手机页面打开后重试。`);
+      throw new Error(t("home.deviceOfflineDescription", { name: targetDevice.name }));
     }
 
     // In Tauri mode, use real file paths
@@ -319,7 +319,7 @@ async function handleSend() {
       appStore.pushToast(
         "success",
         t("home.receiveRequestSent"),
-        `请在 ${targetDevice.name} 上确认下载文件。`
+        t("home.confirmOnTarget", { name: targetDevice.name })
       );
 
       // The request is now visible in the transfer list; reset the composer.

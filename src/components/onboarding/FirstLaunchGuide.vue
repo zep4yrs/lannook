@@ -45,7 +45,7 @@ const steps = computed(() => [
         <X :size="18" />
       </button>
       <button class="guide-language" type="button" @click="toggleLocale">
-        {{ locale === "zh-CN" ? "English" : "简体中文" }}
+        {{ locale === "zh-CN" ? t("language.en") : t("language.zh") }}
       </button>
       <p class="guide-eyebrow">{{ t("onboarding.eyebrow") }}</p>
       <h1 id="guide-title" class="guide-title">{{ t("onboarding.title") }}</h1>

@@ -23,7 +23,7 @@ const chunkDone = computed(() => props.task.chunkDone ?? 0);
       <!-- Chunk Progress -->
       <div class="mb-3">
         <div class="flex items-center justify-between mb-1.5">
-          <span style="font-size: var(--text-xs); color: var(--color-text-tertiary)">分片进度</span>
+          <span style="font-size: var(--text-xs); color: var(--color-text-tertiary)">{{ t("transfers.chunkProgress") }}</span>
           <span style="font-size: var(--text-xs); color: var(--color-text-tertiary); font-family: var(--font-mono)">
             {{ chunkDone }} / {{ chunkTotal }}
           </span>

@@ -152,7 +152,7 @@ function closeMenu() {
               :class="{ active: locale === 'zh-CN' }"
               @click="setLocale('zh-CN')"
             >
-              中文
+              {{ t("language.zh") }}
             </button>
             <button
               type="button"
