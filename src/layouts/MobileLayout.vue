@@ -2,7 +2,7 @@
 import { computed, ref, onMounted, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { RouterLink, RouterView, useRoute } from "vue-router";
-import { Sun, Moon, Menu, Send, ArrowLeftRight } from "lucide-vue-next";
+import { Sun, Moon, Menu, Send, ArrowLeftRight, HelpCircle, Scale } from "lucide-vue-next";
 import { useSettingsStore } from "../stores/settings";
 import { useMobileSessionStore } from "@/stores/mobileSession";
 import AppLogo from "../components/common/AppLogo.vue";
@@ -146,6 +146,16 @@ function closeMenu() {
             <component :is="item.icon" :size="18" />
             <span>{{ item.label }}</span>
           </RouterLink>
+          <div class="menu-extra">
+            <RouterLink class="menu-link" :to="{ name: 'mobile-help', query: route.query }" @click="closeMenu">
+              <HelpCircle :size="18" />
+              <span>{{ t("nav.help") }}</span>
+            </RouterLink>
+            <RouterLink class="menu-link" :to="{ name: 'legal-document', params: { documentType: 'terms' } }" @click="closeMenu">
+              <Scale :size="18" />
+              <span>{{ t("mobile.legalInfo") }}</span>
+            </RouterLink>
+          </div>
           <div class="menu-language" role="group" :aria-label="t('language.title')">
             <button
               type="button"
@@ -205,8 +215,11 @@ function closeMenu() {
     <ReceiveRequestDialog
       :visible="showReceiveDialog"
       :transfer="pendingReceiveTransfer"
+      :downloads="mobileSession.receiveDownloads"
+      :receiving="mobileSession.isReceiving"
       @accept="mobileSession.acceptIncomingTransfer"
       @reject="mobileSession.rejectIncomingTransfer"
+      @retry-file="mobileSession.retryDownloadFile"
     />
   </div>
 </template>
@@ -293,8 +306,10 @@ function closeMenu() {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  /* audit-34: 44px hit target on touch screens; icon stays visually small. */
+  width: 44px;
+  height: 44px;
+  margin-right: -6px;
   border: none;
   border-radius: var(--radius-md);
   background: transparent;
@@ -356,6 +371,14 @@ function closeMenu() {
 .menu-link.router-link-exact-active {
   color: var(--color-brand-primary);
   background: var(--color-brand-primary-soft);
+}
+
+.menu-extra {
+  display: flex;
+  flex-direction: column;
+  margin-top: 5px;
+  padding-top: 6px;
+  border-top: 1px solid var(--color-border);
 }
 
 .menu-language {

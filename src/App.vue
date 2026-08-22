@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted } from "vue";
+import { onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
@@ -8,6 +8,7 @@ import { useAppStore } from "./stores/app";
 import { isTauri, openReceiveFolder, quitApplication } from "./services/tauri";
 import { useLegalConsent } from "./composables/useLegalConsent";
 import ToastHost from "./components/overlays/ToastHost.vue";
+import ConfirmDialog from "./components/common/ConfirmDialog.vue";
 import LegalConsentDialog from "./components/legal/LegalConsentDialog.vue";
 import FirstLaunchGuide from "./components/onboarding/FirstLaunchGuide.vue";
 import { useLocale } from "./i18n";
@@ -53,8 +54,9 @@ onMounted(async () => {
           }
         }),
         listen("close-requested", () => {
-          const shouldQuit = window.confirm(t("settings.closeConfirm"));
-          if (shouldQuit) void quitApplication();
+          // audit-18: native window.confirm replaced by the in-app dialog so
+          // the confirmation matches the rest of the product's modals.
+          quitPromptVisible.value = true;
         }),
       ]);
     } catch (err) {
@@ -62,6 +64,13 @@ onMounted(async () => {
     }
   }
 });
+
+const quitPromptVisible = ref(false);
+
+function confirmQuit() {
+  quitPromptVisible.value = false;
+  void quitApplication();
+}
 
 onUnmounted(() => {
   for (const unlisten of unlisteners) {
@@ -84,6 +93,14 @@ onUnmounted(() => {
     @accept="acceptLegalConsent"
     @decline="declineLegalConsent"
     @reconsider="reconsiderLegalConsent"
+  />
+  <ConfirmDialog
+    :visible="quitPromptVisible"
+    :title="t('settings.closeConfirm')"
+    :confirm-label="t('settings.closeQuit')"
+    tone="primary"
+    @confirm="confirmQuit"
+    @cancel="quitPromptVisible = false"
   />
   <FirstLaunchGuide v-if="isDesktopApp && legalConsentStatus === 'accepted'" />
 </template>

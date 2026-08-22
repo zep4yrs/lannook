@@ -1,10 +1,15 @@
 <script setup lang="ts">
 import { useRouter } from "vue-router";
-import { ArrowLeft, Download, Send, ShieldCheck, Wifi, Wrench } from "lucide-vue-next";
+import { ArrowLeft, Download, Send, ShieldCheck, Wifi, Wrench, RotateCcw } from "lucide-vue-next";
 import { useLocale } from "@/i18n";
 
 const router = useRouter();
 const { t } = useLocale();
+
+// audit-24: the first-launch guide was unreachable after dismissal.
+function reopenGuide() {
+  window.dispatchEvent(new CustomEvent("lannook:reopen-guide"));
+}
 </script>
 
 <template>
@@ -17,6 +22,14 @@ const { t } = useLocale();
       <h1>{{ t("help.title") }}</h1>
       <p>{{ t("help.subtitle") }}</p>
     </header>
+
+    <section class="help-card">
+      <div class="section-heading"><RotateCcw :size="18" /><h2>{{ t("help.reopenGuideTitle") }}</h2></div>
+      <p>{{ t("help.reopenGuideDesc") }}</p>
+      <button class="reopen-guide-btn" type="button" @click="reopenGuide">
+        <RotateCcw :size="14" /> {{ t("help.reopenGuide") }}
+      </button>
+    </section>
 
     <section class="help-card">
       <div class="section-heading"><Wifi :size="18" /><h2>{{ t("help.connectTitle") }}</h2></div>
@@ -73,6 +86,20 @@ const { t } = useLocale();
 .help-card p { margin: 12px 0 0; }
 .help-card ol, .help-card ul { margin: 12px 0 0; padding-left: 22px; }
 .help-card code { padding: 1px 4px; border-radius: 4px; background: var(--color-surface-inset); color: var(--color-text-primary); }
+.reopen-guide-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 7px 14px;
+  border: 1px solid var(--color-brand-primary);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-brand);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+.reopen-guide-btn:hover { background: var(--color-selected); }
 .legal-links { display: flex; flex-wrap: wrap; gap: 14px; }
 .legal-links a { color: var(--color-brand-primary); text-decoration: none; }
 .legal-links a:hover { text-decoration: underline; }

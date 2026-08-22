@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { Sun, Moon, MonitorSmartphone, FolderOpen, ShieldCheck, FileText, Gauge, Info } from "lucide-vue-next";
 import { useSettingsStore } from "@/stores/settings";
 import { useAppStore } from "@/stores/app";
@@ -13,6 +13,10 @@ import { APP_NAME } from "@/config/brand";
 const settingsStore = useSettingsStore();
 const appStore = useAppStore();
 const { locale, setLocale, t } = useLocale();
+
+// audit-21: tell the user when their raw input was clamped into range.
+const speedClamped = ref(false);
+const maxFileSizeInput = ref<string>(String(Math.round(settingsStore.maxFileSize / (1024 * 1024))));
 
 const themeOptions = computed<{ value: ThemeMode; label: string; icon: typeof Sun }[]>(() => [
   { value: "light", label: t("theme.light"), icon: Sun },
@@ -38,7 +42,25 @@ function setAuthorizationExpiryHours(hours: number) {
 
 function onSpeedLimitChange(event: Event) {
   const raw = Number((event.target as HTMLInputElement).value);
-  settingsStore.setDownloadSpeedLimitMbps(Number.isFinite(raw) ? raw : 0);
+  const value = Number.isFinite(raw) ? raw : 0;
+  const clamped = Math.max(0, Math.min(1024, Math.round(value)));
+  speedClamped.value = clamped !== value || (event.target as HTMLInputElement).value === "";
+  settingsStore.setDownloadSpeedLimitMbps(clamped);
+  // Reflect the effective value back into the field.
+  (event.target as HTMLInputElement).value = String(clamped);
+}
+
+/** audit-20: surface the previously hidden maxFileSize setting (MB, 0 = unlimited). */
+const MAX_FILE_BYTES_PER_MB = 1024 * 1024;
+
+function onMaxFileSizeChange(event: Event) {
+  const input = event.target as HTMLInputElement;
+  let mb = Math.round(Number(input.value));
+  if (!Number.isFinite(mb) || mb < 0) mb = 0;
+  if (mb > 102400) mb = 102400; // 100 GB sanity ceiling
+  input.value = String(mb);
+  maxFileSizeInput.value = String(mb);
+  settingsStore.setMaxFileSize(mb * MAX_FILE_BYTES_PER_MB);
 }
 
 const authorizationOptions = [
@@ -220,7 +242,26 @@ async function changeFolder() {
               :value="settingsStore.downloadSpeedLimitMbps"
               @change="onSpeedLimitChange"
             />
-            <span class="speed-limit-unit">MiB/s</span>
+            <!-- audit-9: label now matches the stored Mbps semantics -->
+            <span class="speed-limit-unit">Mbps</span>
+          </div>
+        </div>
+        <p v-if="speedClamped" class="clamp-hint">{{ t("settings.valueClamped") }}</p>
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <span class="toggle-label">{{ t("settings.maxFileSize") }}</span>
+            <span class="toggle-desc">{{ t("settings.maxFileSizeDescription") }}</span>
+          </div>
+          <div class="speed-limit-picker">
+            <input
+              type="number"
+              min="0"
+              step="1"
+              class="speed-limit-input"
+              :value="maxFileSizeInput"
+              @change="onMaxFileSizeChange"
+            />
+            <span class="speed-limit-unit">MB</span>
           </div>
         </div>
       </section>
@@ -335,6 +376,12 @@ async function changeFolder() {
   border: none;
   border-top: 1px solid var(--color-border);
   margin: 20px 0;
+}
+
+.clamp-hint {
+  margin: 6px 0 0;
+  color: var(--color-state-warning);
+  font-size: var(--text-xs);
 }
 
 /* Theme Options */

@@ -24,6 +24,7 @@ import {
 } from "@/services/api";
 import { FileUploader } from "@/services/upload";
 import type { UploadProgress } from "@/services/upload";
+import { formatBytes, formatSpeed, formatRemaining } from "@/utils/format";
 import DeviceSelectorSheet from "@/components/overlays/DeviceSelectorSheet.vue";
 import { useMobileSessionStore } from "@/stores/mobileSession";
 import type { Device } from "@/types";
@@ -179,34 +180,6 @@ function dropPreview(file: SelectedFile) {
     URL.revokeObjectURL(file.previewUrl);
     file.previewUrl = undefined;
   }
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes >= 1_073_741_824) {
-    return `${(bytes / 1_073_741_824).toFixed(2)} GB`;
-  }
-  if (bytes >= 1_048_576) {
-    return `${(bytes / 1_048_576).toFixed(1)} MB`;
-  }
-  if (bytes >= 1024) {
-    return `${(bytes / 1024).toFixed(1)} KB`;
-  }
-  return `${bytes} B`;
-}
-
-function formatSpeed(bytesPerSec: number): string {
-  if (bytesPerSec <= 0) return "—";
-  if (bytesPerSec < 1024 * 1024)
-    return `${(bytesPerSec / 1024).toFixed(0)} KB/s`;
-  return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
-}
-
-function formatRemaining(seconds: number | null): string {
-  if (seconds == null || seconds <= 0) return "—";
-  if (seconds < 60) return `${seconds}s`;
-  const min = Math.floor(seconds / 60);
-  const sec = seconds % 60;
-  return `${min}m ${sec}s`;
 }
 
 function getFileIcon(type: string) {
@@ -520,7 +493,7 @@ async function handleCancel() {
           <span>{{ formatBytes(uploadProgress.transferredBytes) }} / {{ formatBytes(uploadProgress.totalBytes) }}</span>
           <span v-if="uploadProgress.status !== 'retrying'">{{ formatSpeed(uploadProgress.speedBytesPerSecond) }}</span>
           <span v-if="uploadProgress.status !== 'retrying'">{{ t("mobile.elapsedStat") }} {{ formatElapsed(uploadProgress.elapsedSeconds) }}</span>
-          <span v-if="uploadProgress.status !== 'retrying'">{{ t("mobile.remainingStat") }} {{ formatRemaining(uploadProgress.remainingSeconds) }}</span>
+          <span v-if="uploadProgress.status !== 'retrying'">{{ t("mobile.remainingStat") }} {{ formatRemaining(uploadProgress.remainingSeconds ?? undefined) }}</span>
         </div>
       </div>
     </section>

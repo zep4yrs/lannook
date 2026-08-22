@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { Check, MonitorSmartphone, ShieldCheck, X } from "lucide-vue-next";
 import { useLocale } from "@/i18n";
 import type { Device } from "@/types";
+import { useModalA11y } from "@/composables/useModalA11y";
 
 const props = defineProps<{
   device: Device | null;
@@ -17,6 +18,15 @@ const emit = defineEmits<{
 const { t } = useLocale();
 const trustDevice = ref(false);
 const expiryHours = ref<number | undefined>(undefined);
+// Shared modal a11y baseline (audit-17): focus trap + Escape rejects.
+const cardElement = ref<HTMLElement | null>(null);
+const rejectButton = ref<HTMLButtonElement | null>(null);
+useModalA11y({
+  visible: () => props.device != null,
+  container: cardElement,
+  onEscape: () => reject(),
+  initialFocus: () => rejectButton.value,
+});
 
 watch(
   () => props.device?.id,
@@ -60,6 +70,7 @@ function reject() {
     <div v-if="device" class="access-request" role="presentation">
       <div class="access-request__backdrop" />
       <section
+        ref="cardElement"
         class="access-request__card"
         role="dialog"
         aria-modal="true"
@@ -70,7 +81,9 @@ function reject() {
         </div>
         <h2 id="device-access-title">{{ t("device.allowTitle") }}</h2>
         <p class="access-request__description">
-          <strong>{{ device.name }}</strong> {{ t("device.allowDescription", { name: device.name }) }}
+          <!-- audit-7: the device name previously rendered twice (bold prefix
+               plus the {name} placeholder inside the i18n string). -->
+          {{ t("device.allowDescription", { name: device.name }) }}
         </p>
 
         <dl class="device-details">
@@ -113,7 +126,13 @@ function reject() {
         <p class="access-request__notice">{{ t("device.expiryHint2") }}</p>
 
         <div class="access-request__actions">
-          <button class="reject-button" type="button" :disabled="pending" @click="reject">
+          <button
+            ref="rejectButton"
+            class="reject-button"
+            type="button"
+            :disabled="pending"
+            @click="reject"
+          >
             <X :size="16" /> {{ t("device.reject") }}
           </button>
           <button class="allow-button" type="button" :disabled="pending" @click="allow">

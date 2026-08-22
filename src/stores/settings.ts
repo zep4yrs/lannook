@@ -1,7 +1,10 @@
-import { defineStore } from "pinia";
+import {
+  defineStore
+} from "pinia";
 import { ref, computed, shallowRef } from "vue";
 import type { ThemeMode } from "../types";
 import { useLocale } from "@/i18n";
+import { useAppStore } from "@/stores/app";
 import {
   isTauri,
   getSettings,
@@ -79,10 +82,19 @@ export const useSettingsStore = defineStore("settings", () => {
   }
 
   function setThemeMode(mode: ThemeMode) {
-    themeMode.value = mode;
-    persistedThemeMode = mode;
-    applyTheme();
-    void saveSettings();
+    const previous = themeMode.value;
+    void applySetting(
+      () => {
+        themeMode.value = mode;
+        persistedThemeMode = mode;
+        applyTheme();
+      },
+      () => {
+        themeMode.value = previous;
+        persistedThemeMode = previous;
+        applyTheme();
+      }
+    );
   }
 
   /**
@@ -101,27 +113,68 @@ export const useSettingsStore = defineStore("settings", () => {
     return () => mq.removeEventListener("change", onChange);
   }
 
+  /**
+   * Apply a setting optimistically, persist it, and roll back with a visible
+   * error when the backend refuses the write (audit-15: silent failures made
+   * settings look saved while they reverted on the next launch).
+   */
+  async function applySetting(apply: () => void, revert: () => void): Promise<boolean> {
+    apply();
+    const saved = await saveSettings();
+    if (!saved) {
+      revert();
+      const appStore = useAppStore();
+      appStore.pushToast("error", t("app.saveSettingsFailed"), t("app.saveSettingsFailedDescription"));
+    }
+    return saved;
+  }
+
   function setReceiveFolder(path: string) {
-    receiveFolder.value = path;
-    void saveSettings();
+    const previous = receiveFolder.value;
+    void applySetting(
+      () => {
+        receiveFolder.value = path;
+      },
+      () => {
+        receiveFolder.value = previous;
+      }
+    );
   }
 
   async function setRequireApproval(value: boolean): Promise<boolean> {
     const previous = requireApproval.value;
-    requireApproval.value = value;
-    const saved = await saveSettings();
-    if (!saved) requireApproval.value = previous;
-    return saved;
+    return applySetting(
+      () => {
+        requireApproval.value = value;
+      },
+      () => {
+        requireApproval.value = previous;
+      }
+    );
   }
 
   function setMaxFileSize(bytes: number) {
-    maxFileSize.value = bytes;
-    void saveSettings();
+    const previous = maxFileSize.value;
+    void applySetting(
+      () => {
+        maxFileSize.value = bytes;
+      },
+      () => {
+        maxFileSize.value = previous;
+      }
+    );
   }
 
   function setAuthorizationExpiryHours(hours: number) {
-    authorizationExpiryHours.value = hours;
-    void saveSettings();
+    const previous = authorizationExpiryHours.value;
+    void applySetting(
+      () => {
+        authorizationExpiryHours.value = hours;
+      },
+      () => {
+        authorizationExpiryHours.value = previous;
+      }
+    );
   }
 
   async function setAutostart(value: boolean) {
@@ -130,7 +183,12 @@ export const useSettingsStore = defineStore("settings", () => {
       return;
     }
     const result = await setAutostartNative(value);
-    if (result.success) autostartEnabled.value = value;
+    if (result.success) {
+      autostartEnabled.value = value;
+      return;
+    }
+    const appStore = useAppStore();
+    appStore.pushToast("error", t("app.saveSettingsFailed"), result.error ?? undefined);
   }
 
   async function setCloseBehavior(value: CloseBehavior) {
@@ -139,7 +197,12 @@ export const useSettingsStore = defineStore("settings", () => {
       return;
     }
     const result = await setCloseBehaviorNative(value);
-    if (result.success) closeBehavior.value = value;
+    if (result.success) {
+      closeBehavior.value = value;
+      return;
+    }
+    const appStore = useAppStore();
+    appStore.pushToast("error", t("app.saveSettingsFailed"), result.error ?? undefined);
   }
 
   /**
@@ -209,8 +272,16 @@ export const useSettingsStore = defineStore("settings", () => {
   }
 
   function setDownloadSpeedLimitMbps(value: number) {
-    downloadSpeedLimitMbps.value = Math.max(0, Math.min(1024, Math.round(value) || 0));
-    void saveSettings();
+    const previous = downloadSpeedLimitMbps.value;
+    const next = Math.max(0, Math.min(1024, Math.round(value) || 0));
+    void applySetting(
+      () => {
+        downloadSpeedLimitMbps.value = next;
+      },
+      () => {
+        downloadSpeedLimitMbps.value = previous;
+      }
+    );
   }
 
   /**

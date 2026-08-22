@@ -7,9 +7,11 @@ import {
   ShieldCheck,
   ShieldOff,
 } from "lucide-vue-next";
-import { onMounted, shallowRef } from "vue";
+import { computed, onMounted, shallowRef } from "vue";
 import { useDevicesStore } from "@/stores/devices";
 import DeviceAuthorizationActions from "@/components/devices/DeviceAuthorizationActions.vue";
+import ConfirmDialog from "@/components/common/ConfirmDialog.vue";
+import { formatRelativeTime } from "@/utils/format";
 import type { Device } from "@/types";
 import { useLocale } from "@/i18n";
 
@@ -17,10 +19,18 @@ const devicesStore = useDevicesStore();
 const { t } = useLocale();
 const pendingDeviceId = shallowRef<string | null>(null);
 const actionError = shallowRef<string | null>(null);
+// audit-12: forgetting a device requires re-pairing, so confirm first.
+const forgetTarget = shallowRef<Device | null>(null);
 
 onMounted(() => {
   void devicesStore.fetchDevices();
 });
+
+const lastSeenLabel = computed(() =>
+  forgetTarget.value?.lastSeenAt
+    ? formatRelativeTime(forgetTarget.value.lastSeenAt)
+    : ""
+);
 
 async function approve(deviceId: string, trusted: boolean) {
   pendingDeviceId.value = deviceId;
@@ -32,6 +42,21 @@ async function approve(deviceId: string, trusted: boolean) {
     return;
   }
   await devicesStore.fetchDevices();
+}
+
+function requestForget(device: Device) {
+  forgetTarget.value = device;
+}
+
+async function confirmForget() {
+  const device = forgetTarget.value;
+  forgetTarget.value = null;
+  if (!device) return;
+  pendingDeviceId.value = device.id;
+  actionError.value = null;
+  const succeeded = await devicesStore.forgetDevice(device.id);
+  pendingDeviceId.value = null;
+  if (!succeeded) actionError.value = t("devices.actionFailed");
 }
 
 function formatApprovalExpiry(value: string): string {
@@ -57,14 +82,6 @@ async function reject(deviceId: string) {
     return;
   }
   await devicesStore.fetchDevices();
-}
-
-async function forget(deviceId: string) {
-  pendingDeviceId.value = deviceId;
-  actionError.value = null;
-  const succeeded = await devicesStore.forgetDevice(deviceId);
-  pendingDeviceId.value = null;
-  if (!succeeded) actionError.value = t("devices.actionFailed");
 }
 
 function getDeviceIcon(device: Device) {
@@ -151,6 +168,11 @@ function getPlatformLabel(platform: string): string {
             <span class="meta-label">{{ t("devices.expires") }}</span>
             <span class="meta-value">{{ formatApprovalExpiry(device.approvedUntil) }}</span>
           </div>
+          <!-- audit-25: help users judge stale offline devices -->
+          <div v-if="!device.online && device.lastSeenAt" class="meta-row">
+            <span class="meta-label">{{ t("devices.lastSeen") }}</span>
+            <span class="meta-value">{{ formatRelativeTime(device.lastSeenAt) }}</span>
+          </div>
         </div>
         <DeviceAuthorizationActions
           :approved="device.approved"
@@ -159,10 +181,20 @@ function getPlatformLabel(platform: string): string {
           @allow-once="approve(device.id, false)"
           @trust="approve(device.id, true)"
           @reject="reject(device.id)"
-          @forget="forget(device.id)"
+          @forget="requestForget(device)"
         />
       </div>
     </div>
+
+    <ConfirmDialog
+      :visible="forgetTarget != null"
+      :title="t('devices.forgetConfirmTitle')"
+      :description="t('devices.forgetConfirmDescription', { name: forgetTarget?.name ?? '', seen: lastSeenLabel })"
+      :confirm-label="t('devices.forget')"
+      tone="danger"
+      @confirm="confirmForget"
+      @cancel="forgetTarget = null"
+    />
   </div>
 </template>
 

@@ -234,6 +234,7 @@ pub fn run() {
             commands::server_cmd::get_settings,
             commands::server_cmd::update_settings,
             commands::server_cmd::open_receive_folder,
+            commands::server_cmd::reveal_in_folder,
             commands::transfer_cmd::send_files_to_device,
             commands::transfer_cmd::get_file_metadata,
             commands::transfer_cmd::get_pending_transfers,

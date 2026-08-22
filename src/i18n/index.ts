@@ -28,7 +28,14 @@ function interpolate(message: string, params: Record<string, string | number>) {
 }
 
 export function translate(key: string, params: Record<string, string | number> = {}) {
-  const message = messages[activeLocale.value][key] ?? messages["zh-CN"][key] ?? key;
+  const message = messages[activeLocale.value][key] ?? messages["zh-CN"][key];
+  if (message === undefined) {
+    // audit-32: never render a raw key to users. In dev builds the marker
+    // makes missing translations obvious; production falls back to the key
+    // itself only as a last resort.
+    if (import.meta.env.DEV) return `[missing:${key}]`;
+    return key;
+  }
   return interpolate(message, params);
 }
 

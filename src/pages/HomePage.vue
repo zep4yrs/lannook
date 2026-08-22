@@ -7,7 +7,6 @@ import {
   UploadCloud,
   Check,
   X,
-  Eye,
   FileText,
   FileImage,
   FileArchive,
@@ -22,17 +21,16 @@ import { useAppStore } from "@/stores/app";
 import { useSettingsStore } from "@/stores/settings";
 import { useTransfersStore } from "@/stores/transfers";
 import { getFileMetadata, isTauri, pickFiles } from "@/services/tauri";
-import { formatRelativeTime } from "@/utils/format";
+import { formatRelativeTime, formatBytes } from "@/utils/format";
 import { openConnectPanelKey } from "@/composables/useConnectPanel";
 import type { Device } from "@/types";
-import type { PendingTransferFile } from "@/stores/transfers";
 import { useLocale } from "@/i18n";
 
 const devicesStore = useDevicesStore();
 const appStore = useAppStore();
 const settingsStore = useSettingsStore();
 const transfersStore = useTransfersStore();
-const { t } = useLocale();
+const { t, locale } = useLocale();
 
 // Opens the connect panel hosted by DesktopLayout (查看连接地址)
 const openConnectPanel = inject(openConnectPanelKey, () => {});
@@ -67,6 +65,21 @@ const pendingFiles = computed(() => transfersStore.pendingFiles);
 // Send state
 const sendStatus = ref<"idle" | "waiting" | "sending" | "requested" | "error">("idle");
 const sendError = ref<string | null>(null);
+// audit-14: remember the pending invitation so it can be withdrawn here
+// instead of forcing a detour to the transfer center.
+const lastRequestedTransferId = ref<string | null>(null);
+const canWithdrawRequest = computed(
+  () => sendStatus.value === "requested" && lastRequestedTransferId.value != null
+);
+
+async function withdrawRequest() {
+  const id = lastRequestedTransferId.value;
+  if (!id) return;
+  await transfersStore.cancelTransfer(id);
+  lastRequestedTransferId.value = null;
+  sendStatus.value = "idle";
+  appStore.pushToast("info", t("home.requestWithdrawn"));
+}
 
 // Drag state
 const isDragging = ref(false);
@@ -75,6 +88,7 @@ const isDragging = ref(false);
 interface RecentTransferRow {
   id: string;
   fileName: string;
+  fileCount: number;
   route: string;
   time: string;
   size: string;
@@ -128,9 +142,10 @@ const recentTransfers = computed<RecentTransferRow[]>(() => {
     return latest.map((transfer) => ({
       id: transfer.id,
       fileName: transfer.files[0]?.name ?? t("home.fileName"),
+      fileCount: transfer.files.length,
       route: `${peerName(transfer.sourceDeviceId)} → ${peerName(transfer.targetDeviceId)}`,
       time: formatRelativeTime(transfer.completedAt ?? transfer.createdAt),
-      size: formatSize(transfer.totalBytes),
+      size: formatBytes(transfer.totalBytes),
       status: transfer.status,
     }));
   }
@@ -138,11 +153,7 @@ const recentTransfers = computed<RecentTransferRow[]>(() => {
 });
 
 function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024)
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  return formatBytes(bytes);
 }
 
 function getDeviceIcon(device: Device) {
@@ -193,10 +204,6 @@ function getErrorMessage(error: unknown): string {
     if (typeof value.error === "string" && value.error.trim()) return value.error;
   }
   return t("home.sendRequestFailed");
-}
-
-function handlePreview(file: PendingTransferFile) {
-  appStore.pushToast("info", t("home.previewDev"), file.name);
 }
 
 function removePendingFile(id: string) {
@@ -278,7 +285,10 @@ function filterOversized(files: PendingFileInput[]): PendingFileInput[] {
     appStore.pushToast(
       "warning",
       t("home.fileTooLarge"),
-      t("home.skippedOversized", { count: rejected.length, names: rejected.join("、") })
+      t("home.skippedOversized", {
+        count: rejected.length,
+        names: rejected.join(locale.value === "zh-CN" ? "、" : ", "),
+      })
     );
   }
   return accepted;
@@ -310,7 +320,8 @@ async function handleSend() {
       }
 
       sendStatus.value = "sending";
-      await transfersStore.sendFiles(filePaths, targetDevice.id);
+      const result = await transfersStore.sendFiles(filePaths, targetDevice.id);
+      lastRequestedTransferId.value = result.transferId;
       sendStatus.value = "requested";
 
       // The phone downloads only after its user accepts this invitation.
@@ -407,13 +418,28 @@ const sendBtnLabel = computed(() => {
               {{ !device.approved ? t("home.unapproved") : device.online ? t("home.online") : t("home.offline") }}
             </span>
           </div>
+          <!-- audit-1: guide first-time users instead of rendering a bare table -->
+          <div v-if="devicesStore.devices.length === 0" class="devices-empty">
+            <Radar :size="22" class="devices-empty-icon" />
+            <p class="devices-empty-title">{{ t("home.noDevicesTitle") }}</p>
+            <p class="devices-empty-desc">{{ t("home.noDevicesDesc") }}</p>
+            <button class="devices-empty-btn" type="button" @click="openConnectPanel">
+              {{ t("app.connectDevice") }}
+            </button>
+          </div>
         </div>
       </section>
 
-      <!-- File Drop Zone -->
+      <!-- File Drop Zone (audit-27: the whole zone is now clickable) -->
       <section
         class="drop-zone"
         :class="{ 'drop-zone--active': isDragging }"
+        role="button"
+        tabindex="0"
+        :aria-label="t('home.chooseFile')"
+        @click="openFilePicker"
+        @keydown.enter.prevent="openFilePicker"
+        @keydown.space.prevent="openFilePicker"
         @dragover="onDragOver"
         @dragleave="onDragLeave"
         @drop="onDrop"
@@ -424,7 +450,7 @@ const sendBtnLabel = computed(() => {
           <strong>{{ selectedDevice?.name ?? t("home.noDeviceSelected") }}</strong>
         </p>
         <p class="drop-zone-hint">{{ t("home.supportedFiles") }}</p>
-        <button class="drop-zone-link" @click="openFilePicker">{{ t("home.chooseFile") }}</button>
+        <button class="drop-zone-link" @click.stop="openFilePicker">{{ t("home.chooseFile") }}</button>
       </section>
 
       <!-- File Tray -->
@@ -438,27 +464,38 @@ const sendBtnLabel = computed(() => {
             <component :is="getFileIcon(file.name)" :size="16" class="file-icon" />
             <span class="file-name">{{ file.name }}</span>
             <span class="file-size">{{ formatSize(file.size) }}</span>
-            <button class="file-action" :title="t('home.preview')" @click="handlePreview(file)">
-              <Eye :size="14" />
-            </button>
+            <!-- audit-8: the "preview" eye button was an unfinished stub that
+                 only toasted "under development"; it is hidden until real
+                 preview support ships. -->
             <button class="file-action file-action--remove" :title="t('home.remove')" @click="removePendingFile(file.id)">
               <X :size="14" />
             </button>
           </div>
         </div>
         <p v-if="sendError" class="send-error">{{ sendError }}</p>
-        <button
-          class="send-btn"
-          :class="{
-            'send-btn--sending': sendStatus === 'waiting' || sendStatus === 'sending',
-            'send-btn--done': sendStatus === 'requested',
-          }"
-          :disabled="sendStatus !== 'idle' || !selectedDevice || !selectedDevice.approved"
-          @click="handleSend"
-        >
-          <Loader v-if="sendStatus === 'waiting' || sendStatus === 'sending'" :size="14" class="spin" />
-          {{ sendBtnLabel }}
-        </button>
+        <div class="send-actions">
+          <button
+            class="send-btn"
+            :class="{
+              'send-btn--sending': sendStatus === 'waiting' || sendStatus === 'sending',
+              'send-btn--done': sendStatus === 'requested',
+            }"
+            :disabled="sendStatus !== 'idle' || !selectedDevice || !selectedDevice.approved"
+            @click="handleSend"
+          >
+            <Loader v-if="sendStatus === 'waiting' || sendStatus === 'sending'" :size="14" class="spin" />
+            {{ sendBtnLabel }}
+          </button>
+          <!-- audit-14: withdraw the pending invitation without leaving Home -->
+          <button
+            v-if="canWithdrawRequest"
+            class="withdraw-btn"
+            type="button"
+            @click="withdrawRequest"
+          >
+            {{ t("home.withdrawRequest") }}
+          </button>
+        </div>
       </section>
 
       <!-- Divider -->
@@ -478,7 +515,11 @@ const sendBtnLabel = computed(() => {
             <span>{{ t("home.status") }}</span>
           </div>
           <div v-for="item in recentTransfers" :key="item.id" class="recent-row">
-            <span class="recent-filename">{{ item.fileName }}</span>
+            <span class="recent-filename">
+              {{ item.fileName }}
+              <!-- audit-23: surface batch transfers instead of showing only the first name -->
+              <span v-if="item.fileCount > 1" class="more-files">{{ t("home.moreFiles", { count: item.fileCount }) }}</span>
+            </span>
             <span class="recent-target">{{ item.route }}</span>
             <span class="recent-time">{{ item.time }}</span>
             <span class="recent-size">{{ item.size }}</span>
@@ -904,6 +945,65 @@ const sendBtnLabel = computed(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.more-files {
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: var(--radius-full);
+  background: var(--color-surface-inset);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-normal);
+}
+
+.devices-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 28px 16px;
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-md);
+  text-align: center;
+}
+
+.devices-empty-icon { color: var(--color-text-tertiary); }
+.devices-empty-title { margin: 4px 0 0; font-size: var(--text-base); color: var(--color-text-primary); font-weight: var(--weight-medium); }
+.devices-empty-desc { margin: 0; max-width: 380px; color: var(--color-text-tertiary); font-size: var(--text-sm); line-height: 1.5; }
+.devices-empty-btn {
+  margin-top: 10px;
+  padding: 7px 16px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--color-brand-primary);
+  color: var(--color-text-inverse);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+}
+.devices-empty-btn:hover { background: var(--color-brand-primary-hover); }
+
+.send-actions { display: flex; gap: 10px; }
+
+.withdraw-btn {
+  flex-shrink: 0;
+  padding: 10px 16px;
+  border: 1px solid var(--color-state-error);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-state-error);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+.withdraw-btn:hover { background: var(--color-state-error-soft); }
+
+.drop-zone { cursor: pointer; }
+.drop-zone:focus-visible {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: 2px;
 }
 
 .recent-target {

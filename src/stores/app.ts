@@ -190,7 +190,7 @@ export const useAppStore = defineStore("app", () => {
         const qr = needsConnectionQrRefresh(qrCode.value, nextIp, info.port, info.token)
           ? await getConnectionQrCode(nextIp)
           : qrCode.value;
-        if (!qr) throw new Error("Unable to generate connection QR code.");
+        if (!qr) throw new Error(t("app.qrGenerateFailed"));
 
         connectionInfo.value = info;
         if (!qrCode.value || qrCode.value.url !== qr.url) qrCode.value = qr;
@@ -202,7 +202,7 @@ export const useAppStore = defineStore("app", () => {
       } catch (error) {
         if (!options.silent) {
           connectionInfoError.value =
-            error instanceof Error ? error.message : "Unable to load connection information.";
+            error instanceof Error ? error.message : t("app.connectionInfoLoadFailed");
         }
         console.error("[app] Failed to refresh connection information:", error);
       } finally {
@@ -307,19 +307,27 @@ export const useAppStore = defineStore("app", () => {
         await refreshConnectionData();
         return;
       } catch (err) {
+        // audit-31: previously this fell through to the browser-only hint,
+        // telling desktop users to "use the desktop app" they are already in.
         console.error("[app] Failed to regenerate token via backend:", err);
+        pushToast(
+          "error",
+          t("app.tokenRegenerateFailed"),
+          err instanceof Error ? err.message : undefined
+        );
+        return;
       }
     }
     pushToast("info", t("app.useDesktopApp"), t("app.useDesktopAppDescription"));
   }
 
   /**
-   * Show a toast notification. Auto-dismisses after 3 seconds.
+   * Show a toast notification. Auto-dismiss timing lives in ToastHost so the
+   * duration can vary per severity (audit-3): errors stay until dismissed.
    */
   function pushToast(kind: ToastKind, title: string, description?: string) {
     const id = ++toastId;
     toasts.value.push({ id, kind, title, description });
-    setTimeout(() => dismissToast(id), 3000);
   }
 
   /**

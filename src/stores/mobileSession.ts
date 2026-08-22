@@ -3,7 +3,7 @@ import { shallowRef } from "vue";
 import {
   acceptTransfer,
   getCurrentDevice,
-  downloadFile,
+  downloadFileWithProgress,
   getPendingTransfersApi,
   pairWithPin,
   registerDevice,
@@ -12,6 +12,7 @@ import {
 } from "@/services/api";
 import { wsClient } from "@/services/websocket";
 import { translate } from "@/i18n";
+import { delay } from "@/utils/format";
 import { readAndMigrateLocalStorageValue } from "@/utils/storage";
 
 export interface IncomingTransfer {
@@ -20,6 +21,16 @@ export interface IncomingTransfer {
   files: { id: string; name: string; size: number }[];
   totalBytes: number;
   expiresAt?: string;
+}
+
+/** Per-file live state for the receive flow (audit-30). */
+export interface ReceiveDownloadItem {
+  fileId: string;
+  name: string;
+  size: number;
+  status: "queued" | "downloading" | "done" | "failed";
+  loadedBytes: number;
+  error?: string;
 }
 
 export type MobileConnectionPhase =
@@ -62,6 +73,12 @@ export const useMobileSessionStore = defineStore("mobileSession", () => {
   const receiveError = shallowRef<string | null>(null);
   const pendingReceiveTransfer = shallowRef<IncomingTransfer | null>(null);
   const showReceiveDialog = shallowRef(false);
+  // Live per-file download state consumed by ReceiveRequestDialog (audit-30).
+  const receiveDownloads = shallowRef<ReceiveDownloadItem[]>([]);
+  const isReceiving = shallowRef(false);
+  let activeReceiveTransfer: IncomingTransfer | null = null;
+  /** One-time download credentials issued by accept_transfer (fileId → token). */
+  let activeDownloadTokens = new Map<string, string>();
 
   let pairingToken = "";
   let socketToken = "";
@@ -151,6 +168,156 @@ export const useMobileSessionStore = defineStore("mobileSession", () => {
     pendingReceiveTransfer.value = null;
     showReceiveDialog.value = false;
     receiveError.value = null;
+    receiveDownloads.value = [];
+    isReceiving.value = false;
+    activeReceiveTransfer = null;
+    activeDownloadTokens = new Map();
+  }
+
+  function patchDownloadItem(fileId: string, patch: Partial<ReceiveDownloadItem>) {
+    receiveDownloads.value = receiveDownloads.value.map((item) =>
+      item.fileId === fileId ? { ...item, ...patch } : item
+    );
+  }
+
+  /** Trigger one browser download and release the object URL afterwards. */
+  function saveBlobToDevice(blob: Blob, name: string) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
+
+  async function downloadSingleFile(
+    transferId: string,
+    token: string,
+    device: string,
+    file: { id: string; name: string; size: number }
+  ): Promise<void> {
+    let lastReportedPercent = -1;
+    const blob = await downloadFileWithProgress(
+      transferId,
+      file.id,
+      token,
+      device,
+      ({ loadedBytes }) => {
+        // Throttle reactive updates to whole-percent steps.
+        const percent = file.size > 0 ? Math.floor((loadedBytes / file.size) * 100) : 100;
+        if (percent !== lastReportedPercent) {
+          lastReportedPercent = percent;
+          patchDownloadItem(file.id, { loadedBytes });
+        }
+      }
+    );
+    saveBlobToDevice(blob, file.name);
+  }
+
+  /**
+   * Retry a single failed file without re-accepting the whole transfer.
+   */
+  async function retryDownloadFile(fileId: string): Promise<void> {
+    const token = sessionToken.value;
+    const transfer = activeReceiveTransfer;
+    if (!token || !deviceId.value || !transfer || isReceiving.value) return;
+    const file = transfer.files.find((entry) => entry.id === fileId);
+    if (!file) return;
+    // A consumed one-time token falls back to the session credential; the
+    // backend decides whether it still authorizes this device.
+    const authToken = activeDownloadTokens.get(fileId) ?? token;
+
+    isReceiving.value = true;
+    patchDownloadItem(fileId, { status: "downloading", error: undefined, loadedBytes: 0 });
+    try {
+      await downloadSingleFile(transfer.id, authToken, deviceId.value, file);
+      patchDownloadItem(fileId, { status: "done" });
+      const items = receiveDownloads.value;
+      if (items.every((item) => item.status === "done")) {
+        void refreshPendingReceiveTransfers();
+      }
+    } catch (error) {
+      console.error("[mobile-session] Retry download failed:", error);
+      patchDownloadItem(fileId, {
+        status: "failed",
+        error: error instanceof Error ? error.message : translate("mobile.receiveFailed"),
+      });
+    } finally {
+      isReceiving.value = false;
+    }
+  }
+
+  async function acceptIncomingTransfer(transferId: string) {
+    const token = sessionToken.value;
+    const transfer = pendingReceiveTransfer.value;
+    if (!token || !deviceId.value || !transfer || transfer.id !== transferId) return;
+    // Guard against double-taps while a download batch is in flight.
+    if (isReceiving.value) return;
+
+    receiveError.value = null;
+    isReceiving.value = true;
+    activeReceiveTransfer = transfer;
+    receiveDownloads.value = transfer.files.map((file) => ({
+      fileId: file.id,
+      name: file.name,
+      size: file.size,
+      status: "queued",
+      loadedBytes: 0,
+    }));
+
+    let accepted: { downloadTokens?: Array<{ fileId: string; downloadToken: string }> };
+    try {
+      accepted = (await acceptTransfer(transferId, token)) as {
+        downloadTokens?: Array<{ fileId: string; downloadToken: string }>;
+      };
+    } catch (error) {
+      isReceiving.value = false;
+      receiveError.value = error instanceof Error ? error.message : translate("mobile.receiveFailed");
+      console.error("[mobile-session] Failed to accept transfer:", error);
+      return;
+    }
+
+    // The one-time download tokens travel in the Authorization header so they
+    // never land in browser history or server access logs.
+    activeDownloadTokens = new Map(
+      (accepted.downloadTokens ?? []).map((item) => [item.fileId, item.downloadToken])
+    );
+
+    let failedCount = 0;
+    for (const [index, file] of transfer.files.entries()) {
+      patchDownloadItem(file.id, { status: "downloading", loadedBytes: 0 });
+      try {
+        const authToken = activeDownloadTokens.get(file.id);
+        if (!authToken) {
+          throw new Error(translate("mobile.noDownloadCredential", { name: file.name }));
+        }
+        await downloadSingleFile(transferId, authToken, deviceId.value, file);
+        patchDownloadItem(file.id, { status: "done" });
+      } catch (error) {
+        failedCount += 1;
+        console.error("[mobile-session] Download failed for file:", file.name, error);
+        patchDownloadItem(file.id, {
+          status: "failed",
+          error: error instanceof Error ? error.message : translate("mobile.receiveFailed"),
+        });
+      }
+      // Mobile browsers throttle rapid programmatic downloads; a small gap
+      // plus per-file visible state keeps the queue honest instead of
+      // silently dropping every file after the first (audit-30).
+      if (index < transfer.files.length - 1) {
+        await delay(400);
+      }
+    }
+
+    isReceiving.value = false;
+    if (failedCount === 0) {
+      clearIncomingRequest();
+      void refreshPendingReceiveTransfers();
+    } else {
+      receiveError.value = translate("mobile.partialReceiveFailed", { count: failedCount });
+    }
   }
 
   async function refreshPendingReceiveTransfers() {
@@ -430,6 +597,19 @@ export const useMobileSessionStore = defineStore("mobileSession", () => {
    * Exchange the 6-digit code shown on the desktop for the pairing
    * capability, then continue with the exact same flow as a scanned token.
    */
+  /**
+   * Map raw pairing failures to human-phrased, localized messages
+   * (audit-21): users saw English backend strings like "invalid pin".
+   */
+  function describePairingError(error: unknown): string {
+    const raw = error instanceof Error ? error.message.toLowerCase() : "";
+    if (raw.includes("expire")) return translate("mobile.pinExpired");
+    if (raw.includes("network") || error instanceof TypeError) {
+      return translate("mobile.networkError");
+    }
+    return translate("mobile.pinInvalid");
+  }
+
   async function submitPin(pin: string): Promise<boolean> {
     const clean = pin.replace(/\D/g, "").slice(0, 6);
     if (clean.length !== 6) return false;
@@ -441,50 +621,10 @@ export const useMobileSessionStore = defineStore("mobileSession", () => {
       await initialize(paired.token);
       return true;
     } catch (error) {
+      console.warn("[mobile-session] PIN pairing failed:", error);
       connectionPhase.value = "pin_entry";
-      connectionError.value =
-        error instanceof Error ? error.message : translate("mobile.pinInvalid");
+      connectionError.value = describePairingError(error);
       return false;
-    }
-  }
-
-  async function acceptIncomingTransfer(transferId: string) {
-    const token = sessionToken.value;
-    const transfer = pendingReceiveTransfer.value;
-    if (!token || !deviceId.value || !transfer || transfer.id !== transferId) return;
-
-    receiveError.value = null;
-    try {
-      const accepted = (await acceptTransfer(transferId, token)) as {
-        downloadTokens?: Array<{ fileId: string; downloadToken: string }>;
-      };
-      const tokenByFile = new Map(
-        (accepted.downloadTokens ?? []).map((item) => [item.fileId, item.downloadToken])
-      );
-
-      for (const file of transfer.files) {
-        const downloadToken = tokenByFile.get(file.id);
-        if (!downloadToken) {
-          throw new Error(translate("mobile.noDownloadCredential", { name: file.name }));
-        }
-        // The one-time download token travels in the Authorization header so
-        // it never lands in browser history or server access logs.
-        const blob = await downloadFile(transferId, file.id, downloadToken, deviceId.value);
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = file.name;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        setTimeout(() => URL.revokeObjectURL(url), 60_000);
-      }
-
-      clearIncomingRequest();
-      void refreshPendingReceiveTransfers();
-    } catch (error) {
-      receiveError.value = error instanceof Error ? error.message : translate("mobile.receiveFailed");
-      console.error("[mobile-session] Failed to accept transfer:", error);
     }
   }
 
@@ -513,6 +653,8 @@ export const useMobileSessionStore = defineStore("mobileSession", () => {
     receiveError,
     pendingReceiveTransfer,
     showReceiveDialog,
+    receiveDownloads,
+    isReceiving,
     initialize,
     requestAccess,
     submitPin,
@@ -520,5 +662,6 @@ export const useMobileSessionStore = defineStore("mobileSession", () => {
     refreshPendingReceiveTransfers,
     acceptIncomingTransfer,
     rejectIncomingTransfer,
+    retryDownloadFile,
   };
 });

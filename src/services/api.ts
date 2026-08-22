@@ -295,3 +295,58 @@ export async function downloadFile(
   }
   return res.blob();
 }
+
+export interface DownloadProgressInfo {
+  loadedBytes: number;
+  totalBytes: number;
+}
+
+/**
+ * Stream a received file to a Blob while reporting byte progress
+ * (audit-30). The legacy downloadFile buffered silently, so multi-GB
+ * transfers left the phone UI frozen with no feedback. Falls back to the
+ * plain blob path when the response has no readable stream.
+ */
+export async function downloadFileWithProgress(
+  transferId: string,
+  fileId: string,
+  token: string,
+  deviceId: string,
+  onProgress: (info: DownloadProgressInfo) => void,
+  signal?: AbortSignal
+): Promise<Blob> {
+  const url = `${BASE}/api/transfers/${transferId}/files/${fileId}/download?deviceId=${encodeURIComponent(deviceId)}`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+    signal,
+  });
+  if (!res.ok) {
+    const payload: unknown = await res.json().catch(() => null);
+    throw new Error(getApiErrorMessage(payload, res.status));
+  }
+
+  const totalBytes = Number(res.headers.get("Content-Length") ?? 0);
+  const body = res.body;
+  if (!body || typeof body.getReader !== "function") {
+    const blob = await res.blob();
+    onProgress({ loadedBytes: blob.size, totalBytes: blob.size });
+    return blob;
+  }
+
+  const reader = body.getReader();
+  const chunks: BlobPart[] = [];
+  let loadedBytes = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      chunks.push(value as unknown as BlobPart);
+      loadedBytes += value.byteLength;
+      onProgress({
+        loadedBytes,
+        totalBytes: totalBytes > 0 ? totalBytes : loadedBytes,
+      });
+    }
+  }
+  return new Blob(chunks);
+}

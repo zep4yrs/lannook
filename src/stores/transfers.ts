@@ -14,6 +14,7 @@ import type { SendTransferResult } from "@/services/tauri";
 import { wsClient } from "@/services/websocket";
 import { genId } from "@/utils/format";
 import { useLocale } from "@/i18n";
+import { useAppStore } from "@/stores/app";
 
 // A file queued for sending (from drag & drop or the file picker)
 export interface PendingTransferFile {
@@ -25,6 +26,7 @@ export interface PendingTransferFile {
 
 export const useTransfersStore = defineStore("transfers", () => {
   const { t } = useLocale();
+  const appStore = useAppStore();
   const transfers = ref<TransferTask[]>([]);
 
   // Files queued by the user (drag & drop / picker) waiting to be sent
@@ -122,6 +124,11 @@ export const useTransfersStore = defineStore("transfers", () => {
         if (!result.success) throw new Error(result.error ?? t("app.cancelTransferFailed"));
       } catch (err) {
         console.error("[transfers] Failed to cancel transfer:", err);
+        appStore.pushToast(
+          "error",
+          t("app.cancelTransferFailed"),
+          err instanceof Error ? err.message : undefined
+        );
         return;
       }
     }
@@ -140,6 +147,11 @@ export const useTransfersStore = defineStore("transfers", () => {
         if (!result.success) throw new Error(result.error ?? t("app.pauseTransferFailed"));
       } catch (err) {
         console.error("[transfers] Failed to pause transfer:", err);
+        appStore.pushToast(
+          "error",
+          t("app.pauseTransferFailed"),
+          err instanceof Error ? err.message : undefined
+        );
         return;
       }
     }
@@ -158,6 +170,11 @@ export const useTransfersStore = defineStore("transfers", () => {
         if (!result.success) throw new Error(result.error ?? t("app.resumeTransferFailed"));
       } catch (err) {
         console.error("[transfers] Failed to resume transfer:", err);
+        appStore.pushToast(
+          "error",
+          t("app.resumeTransferFailed"),
+          err instanceof Error ? err.message : undefined
+        );
         return;
       }
     }
@@ -169,12 +186,15 @@ export const useTransfersStore = defineStore("transfers", () => {
   }
 
   /**
-   * Retry a failed transfer. Calls backend resume_transfer to re-attempt.
+   * Retry a failed (or cancelled, see audit-10) transfer. Calls backend
+   * resume_transfer to re-attempt; rolls the visible status back when the
+   * backend refuses so the row never lies about its state.
    */
   async function retryTransfer(id: string) {
     const task = transfers.value.find((t) => t.id === id);
-    if (!task || task.status !== "failed") return;
+    if (!task || (task.status !== "failed" && task.status !== "cancelled")) return;
 
+    const previousStatus = task.status;
     task.status = "transferring";
     task.error = undefined;
     task.progress = 0;
@@ -189,8 +209,13 @@ export const useTransfersStore = defineStore("transfers", () => {
         if (!result.success) throw new Error(result.error ?? t("app.retryTransferFailed"));
       } catch (err) {
         console.error("[transfers] retry failed:", err);
-        task.status = "failed";
+        task.status = previousStatus;
         task.error = err instanceof Error ? err.message : String(err);
+        appStore.pushToast(
+          "error",
+          t("app.retryTransferFailed"),
+          err instanceof Error ? err.message : undefined
+        );
       }
     }
   }
@@ -444,10 +469,20 @@ export const useTransfersStore = defineStore("transfers", () => {
         const result = await tauriDeleteTransfers(ids);
         if (!result.success) {
           console.error("[transfers] Failed to delete transfers:", result.error);
+          appStore.pushToast(
+            "error",
+            t("app.deleteTransfersFailed"),
+            result.error ?? undefined
+          );
           queueTransferRefresh();
         }
       } catch (err) {
         console.error("[transfers] Failed to delete transfers:", err);
+        appStore.pushToast(
+          "error",
+          t("app.deleteTransfersFailed"),
+          err instanceof Error ? err.message : undefined
+        );
         queueTransferRefresh();
       }
     } else {

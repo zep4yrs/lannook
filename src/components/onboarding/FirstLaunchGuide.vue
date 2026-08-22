@@ -1,13 +1,23 @@
 <script setup lang="ts">
-import { computed, shallowRef } from "vue";
+import { computed, onMounted, onUnmounted, ref, shallowRef } from "vue";
 import { Check, Monitor, QrCode, Send, X } from "lucide-vue-next";
 import { useLocale } from "@/i18n";
 import { readAndMigrateLocalStorageValue } from "@/utils/storage";
+import { useModalA11y } from "@/composables/useModalA11y";
 
 const STORAGE_KEY = "lannook.first-launch-guide.v1";
 const LEGACY_STORAGE_KEYS = ["lynqo.first-launch-guide.v1"] as const;
+/** Window event used by the Help page to re-open this guide (audit-24). */
+const REOPEN_GUIDE_EVENT = "lannook:reopen-guide";
 const { locale, setLocale, t } = useLocale();
 const visible = shallowRef(readDismissed() === false);
+const dialogElement = ref<HTMLElement | null>(null);
+
+useModalA11y({
+  visible: () => visible.value,
+  container: dialogElement,
+  onEscape: () => dismiss(),
+});
 
 function readDismissed(): boolean {
   try {
@@ -26,6 +36,13 @@ function dismiss() {
   visible.value = false;
 }
 
+function handleReopen() {
+  visible.value = true;
+}
+
+onMounted(() => window.addEventListener(REOPEN_GUIDE_EVENT, handleReopen));
+onUnmounted(() => window.removeEventListener(REOPEN_GUIDE_EVENT, handleReopen));
+
 function toggleLocale() {
   setLocale(locale.value === "zh-CN" ? "en-US" : "zh-CN");
 }
@@ -40,7 +57,7 @@ const steps = computed(() => [
 
 <template>
   <div v-if="visible" class="guide-overlay">
-    <section class="guide-dialog" role="dialog" aria-modal="true" aria-labelledby="guide-title">
+    <section ref="dialogElement" class="guide-dialog" role="dialog" aria-modal="true" aria-labelledby="guide-title">
       <button class="guide-close" type="button" :aria-label="t('onboarding.close')" @click="dismiss">
         <X :size="18" />
       </button>

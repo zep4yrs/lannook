@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
-import { FolderOpen, FileText, FileImage, FileVideo, FileArchive } from "lucide-vue-next";
+import { computed, onMounted, shallowRef } from "vue";
+import { FolderOpen, FileText, FileImage, FileVideo, FileArchive, FolderSearch, Trash2 } from "lucide-vue-next";
 import { useSettingsStore } from "@/stores/settings";
 import { useTransfersStore } from "@/stores/transfers";
 import { useDevicesStore } from "@/stores/devices";
 import { useAppStore } from "@/stores/app";
-import { isTauri, openReceiveFolder } from "@/services/tauri";
+import { isTauri, openReceiveFolder, revealInFolder } from "@/services/tauri";
 import { formatBytes } from "@/utils/format";
 import { useLocale } from "@/i18n";
+import ConfirmDialog from "@/components/common/ConfirmDialog.vue";
 
 const settingsStore = useSettingsStore();
 const transfersStore = useTransfersStore();
@@ -21,7 +22,12 @@ interface ReceivedFile {
   size: string;
   date: string;
   source: string;
+  savePath?: string;
 }
+
+// audit-22: per-row destructive action needs confirmation too.
+const deleteTarget = shallowRef<ReceivedFile | null>(null);
+const busyId = shallowRef<string | null>(null);
 
 function deviceName(id: string): string {
   if (id === "local") return t("device.thisDevice");
@@ -57,6 +63,7 @@ const receivedFiles = computed<ReceivedFile[]>(() => {
         size: formatBytes(transfer.totalBytes),
         date: formatDateTime(transfer.completedAt ?? transfer.createdAt),
         source: deviceName(transfer.sourceDeviceId),
+        savePath: transfer.savePath,
       }));
   }
   return [];
@@ -82,6 +89,31 @@ function getFileIcon(name: string) {
   return FileText;
 }
 
+/** Reveal the received file in the platform file manager (audit-22). */
+async function handleReveal(file: ReceivedFile) {
+  if (!isTauri()) {
+    appStore.pushToast("info", t("received.desktopOnly"), t("received.desktopOnlyDescription"));
+    return;
+  }
+  busyId.value = file.id;
+  try {
+    const result = await revealInFolder(file.savePath ?? settingsStore.receiveFolder);
+    if (!result.success) throw new Error(result.error ?? "reveal failed");
+  } catch (err) {
+    console.error("[received] Failed to reveal file:", err);
+    appStore.pushToast("error", t("received.openFailed"), t("received.openFailedDescription"));
+  } finally {
+    busyId.value = null;
+  }
+}
+
+async function confirmDelete() {
+  const file = deleteTarget.value;
+  deleteTarget.value = null;
+  if (!file) return;
+  await transfersStore.removeTransfers([file.id]);
+}
+
 onMounted(() => {
   void transfersStore.fetchTransfers();
 });
@@ -104,11 +136,11 @@ onMounted(() => {
       <div v-if="receivedFiles.length === 0" class="received-empty">
         {{ t("received.empty") }}
       </div>
-      <div
-        v-for="file in receivedFiles"
-        :key="file.id"
-        class="received-item"
-      >
+        <div
+          v-for="file in receivedFiles"
+          :key="file.id"
+          class="received-item"
+        >
         <component :is="getFileIcon(file.name)" :size="18" class="received-icon" />
         <div class="received-info">
           <span class="received-name">{{ file.name }}</span>
@@ -118,8 +150,40 @@ onMounted(() => {
           <span class="received-size">{{ file.size }}</span>
           <span class="received-date">{{ file.date }}</span>
         </div>
+        <!-- audit-22: act on a single received file without hunting Explorer -->
+        <div class="received-actions">
+          <button
+            class="received-action"
+            type="button"
+            :title="t('received.reveal')"
+            :aria-label="t('received.reveal')"
+            :disabled="busyId === file.id"
+            @click="handleReveal(file)"
+          >
+            <FolderSearch :size="15" />
+          </button>
+          <button
+            class="received-action received-action--danger"
+            type="button"
+            :title="t('received.deleteRecord')"
+            :aria-label="t('received.deleteRecord')"
+            @click="deleteTarget = file"
+          >
+            <Trash2 :size="15" />
+          </button>
+        </div>
       </div>
     </div>
+
+    <ConfirmDialog
+      :visible="deleteTarget != null"
+      :title="t('received.deleteConfirmTitle')"
+      :description="t('received.deleteConfirmDescription', { name: deleteTarget?.name ?? '' })"
+      :confirm-label="t('received.deleteRecord')"
+      tone="danger"
+      @confirm="confirmDelete"
+      @cancel="deleteTarget = null"
+    />
   </div>
 </template>
 
@@ -250,4 +314,43 @@ onMounted(() => {
   color: var(--color-text-tertiary);
   font-family: var(--font-mono);
 }
+
+.received-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.received-item:hover .received-actions,
+.received-item:focus-within .received-actions {
+  opacity: 1;
+}
+
+.received-action {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.received-action:hover:not(:disabled) {
+  background: var(--color-hover);
+  color: var(--color-text-primary);
+}
+
+.received-action--danger:hover:not(:disabled) {
+  background: var(--color-state-error-soft);
+  color: var(--color-state-error);
+}
+
+.received-action:disabled { cursor: wait; opacity: 0.5; }
 </style>

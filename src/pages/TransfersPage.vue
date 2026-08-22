@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, shallowRef } from "vue";
+import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import {
   FolderOpen,
@@ -25,6 +25,8 @@ import { useAppStore } from "@/stores/app";
 import { isTauri, openReceiveFolder } from "@/services/tauri";
 import type { TransferTask } from "@/types";
 import TransferCenterFilterBar, { type TransferCenterFilter } from "@/components/transfers/TransferCenterFilterBar.vue";
+import ConfirmDialog from "@/components/common/ConfirmDialog.vue";
+import { formatBytes, formatSpeed, formatRemaining } from "@/utils/format";
 import { useLocale } from "@/i18n";
 
 const transfersStore = useTransfersStore();
@@ -109,26 +111,7 @@ const totalSpeed = computed(() => {
 });
 
 function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024)
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
-
-function formatSpeed(bytesPerSec: number): string {
-  if (bytesPerSec <= 0) return "—";
-  if (bytesPerSec < 1024 * 1024)
-    return `${(bytesPerSec / 1024).toFixed(0)} KB/s`;
-  return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
-}
-
-function formatRemaining(seconds?: number): string {
-  if (seconds == null || seconds <= 0) return "—";
-  if (seconds < 60) return `${seconds}s`;
-  const min = Math.floor(seconds / 60);
-  const sec = seconds % 60;
-  return `${min}m ${sec}s`;
+  return formatBytes(bytes);
 }
 
 function parseTimestamp(value: string | undefined): number | null {
@@ -240,16 +223,26 @@ function selectFilter(filter: TransferCenterFilter) {
   });
 }
 
+// audit-10/11: destructive actions require explicit confirmation.
+const cancelTarget = shallowRef<TransferTask | null>(null);
+const batchDeleteVisible = ref(false);
+
+function requestCancel(task: TransferTask) {
+  cancelTarget.value = task;
+}
+
+function confirmCancel() {
+  const task = cancelTarget.value;
+  cancelTarget.value = null;
+  if (task) transfersStore.cancelTransfer(task.id);
+}
+
 function handlePause(task: TransferTask) {
   if (task.status === "paused") {
     transfersStore.resumeTransfer(task.id);
   } else {
     transfersStore.pauseTransfer(task.id);
   }
-}
-
-function handleCancel(id: string) {
-  transfersStore.cancelTransfer(id);
 }
 
 async function handleOpenReceiveFolder() {
@@ -301,27 +294,48 @@ function exitSelection() {
 function batchRetry() {
   for (const id of selectedIds.value) {
     const task = transfersStore.transfers.find((t) => t.id === id);
-    if (task?.status === "failed") transfersStore.retryTransfer(id);
+    if (task?.status === "failed" || task?.status === "cancelled") transfersStore.retryTransfer(id);
   }
   exitSelection();
 }
 
 async function batchDelete() {
+  if (selectedIds.value.length === 0) return;
+  // audit-11: confirm before wiping history records.
+  batchDeleteVisible.value = true;
+}
+
+async function confirmBatchDelete() {
   const ids = [...selectedIds.value];
+  batchDeleteVisible.value = false;
   exitSelection();
   await transfersStore.removeTransfers(ids);
 }
 
+// audit-35: only tick the clock while transfers are actually active; idle
+// history pages no longer re-render every second.
 onMounted(() => {
-  elapsedTimer = window.setInterval(() => {
-    now.value = Date.now();
-  }, 1_000);
   void transfersStore.fetchTransfers();
   // Only register listeners once
   if (!transfersStore.listenersRegistered) {
     transfersStore.setupWebSocketListeners();
   }
 });
+
+watch(
+  activeCount,
+  (count) => {
+    if (count > 0 && elapsedTimer === null) {
+      elapsedTimer = window.setInterval(() => {
+        now.value = Date.now();
+      }, 1_000);
+    } else if (count === 0 && elapsedTimer !== null) {
+      window.clearInterval(elapsedTimer);
+      elapsedTimer = null;
+    }
+  },
+  { immediate: true }
+);
 
 onUnmounted(() => {
   if (elapsedTimer !== null) window.clearInterval(elapsedTimer);
@@ -445,7 +459,11 @@ onUnmounted(() => {
                 class="file-icon"
               />
               <span class="file-name-wrap">
-                <span class="file-name">{{ task.files[0]?.name }}</span>
+                <span class="file-name">
+                  {{ task.files[0]?.name }}
+                  <!-- audit-23: batch transfers show their full size -->
+                  <span v-if="task.files.length > 1" class="files-badge">{{ t("transfers.fileCount", { count: task.files.length }) }}</span>
+                </span>
                 <span v-if="getRelayPath(task)" class="relay-path">{{ getRelayPath(task) }}</span>
               </span>
             </span>
@@ -483,8 +501,9 @@ onUnmounted(() => {
               </span>
             </span>
             <span class="col-actions">
+              <!-- audit-10: cancelled transfers get a retry path again -->
               <button
-                v-if="task.status === 'failed'"
+                v-if="task.status === 'failed' || task.status === 'cancelled'"
                 class="resume-btn"
                 @click="handleRetry(task.id)"
               >
@@ -507,9 +526,9 @@ onUnmounted(() => {
               </button>
               <button
                 v-if="task.status !== 'completed' && task.status !== 'cancelled' && task.status !== 'rejected' && task.status !== 'expired' && task.status !== 'failed'"
-                class="action-btn action-btn--danger"
+                class="action-btn action-btn--danger action-btn--cancel"
                 :title="t('transfers.cancel')"
-                @click="handleCancel(task.id)"
+                @click="requestCancel(task)"
               >
                 <X :size="14" />
               </button>
@@ -567,6 +586,28 @@ onUnmounted(() => {
         </template>
       </div>
     </div>
+
+    <!-- audit-10: cancel needs explicit confirmation (progress is lost and
+         the row cannot self-recover) -->
+    <ConfirmDialog
+      :visible="cancelTarget != null"
+      :title="t('transfers.cancelConfirmTitle')"
+      :description="t('transfers.cancelConfirmDescription', { name: cancelTarget?.files[0]?.name ?? '' })"
+      :confirm-label="t('transfers.cancel')"
+      tone="danger"
+      @confirm="confirmCancel"
+      @cancel="cancelTarget = null"
+    />
+    <!-- audit-11: batch delete confirmation; received files stay on disk -->
+    <ConfirmDialog
+      :visible="batchDeleteVisible"
+      :title="t('transfers.deleteConfirmTitle')"
+      :description="t('transfers.deleteConfirmDescription', { count: selectedIds.length })"
+      :confirm-label="t('transfers.batchDelete')"
+      tone="danger"
+      @confirm="confirmBatchDelete"
+      @cancel="batchDeleteVisible = false"
+    />
   </div>
 </template>
 
@@ -903,13 +944,32 @@ onUnmounted(() => {
 .col-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
   opacity: 0;
   transition: opacity var(--transition-fast);
 }
 
-.transfer-row:hover .col-actions {
+.transfer-row:hover .col-actions,
+/* audit-5: keyboard users must see the actions too */
+.transfer-row:focus-within .col-actions {
   opacity: 1;
+}
+
+.action-btn--cancel {
+  /* audit-10: keep the destructive affordance visible at rest so the
+     pause/cancel adjacency cannot hide a misclick */
+  border: 1px solid var(--color-state-error);
+  color: var(--color-state-error);
+}
+
+.files-badge {
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: var(--radius-full);
+  background: var(--color-surface-inset);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-normal);
 }
 
 .action-btn {

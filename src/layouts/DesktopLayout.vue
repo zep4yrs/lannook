@@ -15,6 +15,7 @@ import { useTransfersStore } from "../stores/transfers";
 import { useSettingsStore } from "../stores/settings";
 import ThemeToggle from "../components/common/ThemeToggle.vue";
 import AppLogo from "../components/common/AppLogo.vue";
+import ConfirmDialog from "../components/common/ConfirmDialog.vue";
 import ConnectDevicePanel from "../components/overlays/ConnectDevicePanel.vue";
 import DeviceAccessRequestDialog from "../components/overlays/DeviceAccessRequestDialog.vue";
 import { openConnectPanelKey } from "../composables/useConnectPanel";
@@ -61,6 +62,23 @@ onUnmounted(() => {
 
 function openConnectPanel() {
   showConnectPanel.value = true;
+}
+
+// audit-13: stopping the service kills in-flight transfers, so warn first.
+const stopServiceConfirmVisible = ref(false);
+const activeTransferCount = computed(() => transfersStore.activeTransfers.length);
+
+function handleServiceToggle() {
+  if (appStore.serverRunning && activeTransferCount.value > 0) {
+    stopServiceConfirmVisible.value = true;
+    return;
+  }
+  void appStore.toggleServer();
+}
+
+function confirmStopService() {
+  stopServiceConfirmVisible.value = false;
+  void appStore.toggleServer();
 }
 
 // Let nested pages (e.g. HomePage) open the connect panel
@@ -138,7 +156,7 @@ const navItems = computed(() => [
           ></span>
           <span class="status-label">{{ appStore.serverRunning ? t("app.running") : t("app.stopped") }}</span>
         </span>
-        <button class="service-toggle-btn" type="button" @click="appStore.toggleServer()">
+        <button class="service-toggle-btn" type="button" @click="handleServiceToggle">
           {{ appStore.serverRunning ? t("app.stopService") : t("app.startService") }}
         </button>
 
@@ -206,6 +224,15 @@ const navItems = computed(() => [
       :pending="accessDecisionPending"
       @allow="allowDeviceAccess"
       @reject="rejectDeviceAccess"
+    />
+    <ConfirmDialog
+      :visible="stopServiceConfirmVisible"
+      :title="t('app.stopServiceConfirmTitle')"
+      :description="t('app.stopServiceConfirmDescription', { count: activeTransferCount })"
+      :confirm-label="t('app.stopService')"
+      tone="danger"
+      @confirm="confirmStopService"
+      @cancel="stopServiceConfirmVisible = false"
     />
   </div>
 </template>

@@ -1312,3 +1312,54 @@ pub async fn open_receive_folder(state: State<'_, SharedState>) -> Result<Comman
         error: None,
     })
 }
+
+/// Reveal a concrete file in the platform file manager (audit-22: the
+/// received-files list previously offered no per-file navigation).
+#[tauri::command]
+pub async fn reveal_in_folder(path: String) -> Result<CommandResult, String> {
+    let target = path.trim().to_string();
+    if target.is_empty() {
+        return Ok(CommandResult {
+            success: false,
+            error: Some("empty_path".to_string()),
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("explorer")
+            .raw_arg(format!("/select,\"{}\"", target))
+            .spawn()
+            .map_err(|e| format!("Failed to reveal file: {}", e))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(format!(
+                "tell application \"Finder\" to reveal POSIX file \"{}\"",
+                target
+            ))
+            .arg("-e")
+            .arg("activate")
+            .spawn()
+            .map_err(|e| format!("Failed to reveal file: {}", e))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let parent = std::path::Path::new(&target)
+            .parent()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| target.clone());
+        std::process::Command::new("xdg-open")
+            .arg(&parent)
+            .spawn()
+            .map_err(|e| format!("Failed to reveal file: {}", e))?;
+    }
+
+    Ok(CommandResult {
+        success: true,
+        error: None,
+    })
+}

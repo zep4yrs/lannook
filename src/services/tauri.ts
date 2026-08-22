@@ -208,6 +208,11 @@ export async function openReceiveFolder(): Promise<CommandResult> {
   return invoke("open_receive_folder");
 }
 
+/** Reveal a concrete file in the platform file manager (audit-22). */
+export async function revealInFolder(path: string): Promise<CommandResult> {
+  return invoke("reveal_in_folder", { path });
+}
+
 export type CloseBehavior = "minimize" | "quit" | "ask";
 
 export async function getAutostartEnabled(): Promise<boolean> {

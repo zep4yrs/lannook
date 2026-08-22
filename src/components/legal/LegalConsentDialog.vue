@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, shallowRef } from "vue";
+import { computed, ref, shallowRef } from "vue";
 import { AlertTriangle, Check, FileText, Scale, ShieldCheck } from "lucide-vue-next";
 import { legalConfig } from "@/config/legal";
 import {
@@ -9,6 +9,7 @@ import {
 import type { LegalConsentStatus } from "@/composables/useLegalConsent";
 import { APP_NAME } from "@/config/brand";
 import { useLocale } from "@/i18n";
+import { useModalA11y } from "@/composables/useModalA11y";
 
 interface Props {
   status: LegalConsentStatus;
@@ -35,11 +36,19 @@ const documentTabs = [
   { type: "privacy", labelKey: "legal.privacy", icon: ShieldCheck },
   { type: "disclaimer", labelKey: "legal.disclaimer", icon: Scale },
 ] as const;
+
+// Consent must not be escapable via Escape, but focus still needs to live
+// inside the dialog while it is open (audit-17 baseline).
+const dialogElement = ref<HTMLElement | null>(null);
+useModalA11y({
+  visible: () => props.status !== "accepted",
+  container: dialogElement,
+});
 </script>
 
 <template>
   <div v-if="status !== 'accepted'" class="consent-overlay">
-    <section class="consent-dialog" role="dialog" aria-modal="true" aria-labelledby="consent-title">
+    <section ref="dialogElement" class="consent-dialog" role="dialog" aria-modal="true" aria-labelledby="consent-title">
       <template v-if="!isDeclined">
         <header class="consent-header">
           <div class="consent-icon"><ShieldCheck :size="24" /></div>
