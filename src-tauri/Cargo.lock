@@ -2421,7 +2421,7 @@ dependencies = [
 
 [[package]]
 name = "lannook"
-version = "26.3.0"
+version = "26.4.0"
 dependencies = [
  "axum",
  "base64 0.22.1",

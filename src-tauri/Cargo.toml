@@ -1,6 +1,6 @@
 [package]
 name = "lannook"
-version = "26.3.0"
+version = "26.4.0"
 description = "LanNook - LAN file transfer"
 authors = ["Map1eBr1dge"]
 license = "GPL-3.0-only"
